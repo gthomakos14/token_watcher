@@ -1,0 +1,57 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<schemalist>
+  <schema id="org.gnome.shell.extensions.antigravity-token-watcher" path="/org/gnome/shell/extensions/antigravity-token-watcher/">
+    <key name="display-format" type="s">
+      <choices>
+        <choice value="percentage"/>
+        <choice value="model-and-percentage"/>
+        <choice value="dual"/>
+        <choice value="icon-only"/>
+      </choices>
+      <default>'percentage'</default>
+      <summary>Top bar display format</summary>
+      <description>Format of the quota information displayed on the top panel</description>
+    </key>
+
+    <key name="primary-model" type="s">
+      <default>'Flash'</default>
+      <summary>Primary model</summary>
+      <description>Substring of the model to prioritize for top bar display (e.g. Flash, Pro, Sonnet)</description>
+    </key>
+
+    <key name="refresh-interval" type="i">
+      <default>30</default>
+      <summary>Refresh interval</summary>
+      <description>Periodic refresh interval in seconds</description>
+    </key>
+
+    <key name="show-badge" type="b">
+      <default>true</default>
+      <summary>Show badge</summary>
+      <description>Show model speed or type badge in the popup menu</description>
+    </key>
+
+    <key name="warn-low-quota" type="b">
+      <default>true</default>
+      <summary>Warn on low quota</summary>
+      <description>Turn top bar indicator amber/red when quota is below threshold</description>
+    </key>
+
+    <key name="low-quota-threshold" type="i">
+      <default>20</default>
+      <summary>Low quota threshold</summary>
+      <description>Percentage under which quota is considered low</description>
+    </key>
+
+    <key name="panel-box" type="s">
+      <choices>
+        <choice value="right"/>
+        <choice value="center"/>
+        <choice value="left"/>
+      </choices>
+      <default>'right'</default>
+      <summary>Panel box location</summary>
+      <description>Which panel box to place the indicator in</description>
+    </key>
+  </schema>
+</schemalist>

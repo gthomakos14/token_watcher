@@ -1,0 +1,16 @@
+{
+  "name": "Antigravity Token Watcher",
+  "description": "Displays Antigravity AI token quotas and model limits in the top bar.",
+  "uuid": "antigravity-token-watcher@github.com/gthomakos14",
+  "shell-version": [
+    "45",
+    "46",
+    "47",
+    "48"
+  ],
+  "extension-type": "shell-extension",
+  "settings-schema": "org.gnome.shell.extensions.antigravity-token-watcher",
+  "gettext-domain": "antigravity-token-watcher",
+  "url": "https://github.com/gthomakos14/token_watcher",
+  "version": 1
+}

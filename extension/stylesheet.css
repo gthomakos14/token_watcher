@@ -1,0 +1,150 @@
+/* Antigravity Token Watcher Styles */
+
+.antigravity-panel-box {
+    spacing: 6px;
+}
+
+.antigravity-panel-icon {
+    icon-size: 16px;
+    width: 16px;
+    height: 16px;
+}
+
+.antigravity-panel-label {
+    font-weight: 600;
+    font-feature-settings: "tnum";
+}
+
+.antigravity-status-good {
+    color: #4ade80;
+}
+
+.antigravity-status-warn {
+    color: #facc15;
+}
+
+.antigravity-status-critical {
+    color: #f87171;
+}
+
+/* Popup Menu Styles */
+.antigravity-menu-container {
+    padding: 10px 14px;
+    min-width: 320px;
+    max-width: 380px;
+    spacing: 12px;
+}
+
+.antigravity-header-box {
+    spacing: 4px;
+}
+
+.antigravity-user-name {
+    font-size: 1.1em;
+    font-weight: bold;
+    color: #ffffff;
+}
+
+.antigravity-user-email {
+    font-size: 0.85em;
+    color: #94a3b8;
+}
+
+.antigravity-plan-badge {
+    font-size: 0.75em;
+    font-weight: 600;
+    background-color: rgba(59, 130, 246, 0.2);
+    color: #60a5fa;
+    border-radius: 4px;
+    padding: 2px 6px;
+    align-self: flex-start;
+    margin-top: 2px;
+}
+
+/* Models Section */
+.antigravity-models-box {
+    spacing: 10px;
+}
+
+.antigravity-model-card {
+    background-color: rgba(255, 255, 255, 0.04);
+    border-radius: 8px;
+    padding: 8px 10px;
+    spacing: 5px;
+}
+
+.antigravity-model-card-active {
+    background-color: rgba(59, 130, 246, 0.08);
+    border: 1px solid rgba(59, 130, 246, 0.3);
+}
+
+.antigravity-model-row {
+    spacing: 6px;
+}
+
+.antigravity-model-title {
+    font-weight: 600;
+    font-size: 0.9em;
+}
+
+.antigravity-model-tag {
+    font-size: 0.7em;
+    background-color: rgba(255, 255, 255, 0.1);
+    color: #cbd5e1;
+    border-radius: 3px;
+    padding: 1px 4px;
+}
+
+.antigravity-model-pct {
+    font-weight: 700;
+    font-size: 0.9em;
+    font-feature-settings: "tnum";
+}
+
+/* Progress bar */
+.antigravity-bar-track {
+    background-color: rgba(255, 255, 255, 0.12);
+    border-radius: 3px;
+    height: 6px;
+    width: 100%;
+}
+
+.antigravity-bar-fill {
+    border-radius: 3px;
+    height: 6px;
+}
+
+.antigravity-bar-fill-good {
+    background-color: #22c55e;
+}
+
+.antigravity-bar-fill-warn {
+    background-color: #eab308;
+}
+
+.antigravity-bar-fill-critical {
+    background-color: #ef4444;
+}
+
+.antigravity-model-reset {
+    font-size: 0.75em;
+    color: #94a3b8;
+}
+
+/* Action Buttons */
+.antigravity-actions-box {
+    spacing: 8px;
+    padding-top: 4px;
+}
+
+.antigravity-action-btn {
+    padding: 6px 12px;
+    border-radius: 6px;
+    background-color: rgba(255, 255, 255, 0.07);
+    font-size: 0.85em;
+    font-weight: 500;
+}
+
+.antigravity-action-btn:hover {
+    background-color: rgba(255, 255, 255, 0.14);
+}
