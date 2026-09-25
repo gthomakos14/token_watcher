@@ -97,11 +97,14 @@ fn main() {
         i += 1;
     }
 
-    let db_path = match custom_db.or_else(db::default_db_path) {
+    let db_path = match custom_db {
         Some(p) => p,
-        None => {
-            eprintln!("Error: $HOME is not set; cannot locate Antigravity state database.");
-            std::process::exit(1);
+        None => match db::default_db_path() {
+            Ok(p) => p,
+            Err(e) => {
+                eprintln!("Error: {e}; cannot locate Antigravity state database");
+                std::process::exit(1);
+            }
         }
     };
 

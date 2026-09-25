@@ -242,7 +242,7 @@ pub fn parse_user_status(raw_val: &str, selected_model_id: Option<u32>) -> Resul
                 }
 
                 let used_pct = (100.0 - remaining_pct).clamp(0.0, 100.0);
-                let is_selected = selected_model_id.map_or(false, |sel_id| sel_id == id);
+                let is_selected = selected_model_id.is_some_and(|sel_id| sel_id == id);
                 if is_selected {
                     selected_model_name = Some(name.clone());
                 }

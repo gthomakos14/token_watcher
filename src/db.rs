@@ -4,10 +4,11 @@ use base64::engine::general_purpose::STANDARD as BASE64;
 use base64::Engine;
 use rusqlite::{Connection, OpenFlags};
 use std::path::{Path, PathBuf};
+use std::env::VarError;
 
-pub fn default_db_path() -> Option<PathBuf> {
-    let home = std::env::var("HOME").ok()?;
-    Some(
+pub fn default_db_path() -> Result<PathBuf, VarError> {
+    let home = std::env::var("HOME")?;
+    Ok(
         PathBuf::from(home)
             .join(".config")
             .join("Antigravity")
@@ -72,13 +73,13 @@ pub fn read_token_report(db_path: &Path) -> Result<TokenReport, String> {
     let mut user_status_raw: Option<String> = None;
     let mut model_pref_raw: Option<String> = None;
 
-    for row in rows {
-        if let Ok((key, val)) = row {
-            if key == "antigravityUnifiedStateSync.userStatus" {
-                user_status_raw = Some(val);
-            } else if key == "antigravityUnifiedStateSync.modelPreferences" {
-                model_pref_raw = Some(val);
-            }
+    for row in rows.filter_map(Result::ok) {
+        let key = row.0;
+        let val = row.1;
+        if key == "antigravityUnifiedStateSync.userStatus" {
+            user_status_raw = Some(val);
+        } else if key == "antigravityUnifiedStateSync.modelPreferences" {
+            model_pref_raw = Some(val);
         }
     }
 
