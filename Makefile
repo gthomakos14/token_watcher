@@ -1,4 +1,4 @@
-UUID = antigravity-token-watcher@github.com/gthomakos14
+UUID = antigravity-token-watcher@gthomakos14.github.com
 INSTALL_DIR = $(HOME)/.local/share/gnome-shell/extensions/$(UUID)
 
 .PHONY: all build install enable disable clean test status

@@ -1,7 +1,7 @@
 {
   "name": "Antigravity Token Watcher",
   "description": "Displays Antigravity AI token quotas and model limits in the top bar.",
-  "uuid": "antigravity-token-watcher@github.com/gthomakos14",
+  "uuid": "antigravity-token-watcher@gthomakos14.github.com",
   "shell-version": [
     "45",
     "46",

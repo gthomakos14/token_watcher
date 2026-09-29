@@ -38,7 +38,7 @@ token_watcher/
 │   ├── parser.rs       # Protobuf wire parser & quota extractor
 │   └── models.rs       # Data structures & JSON serialization
 ├── extension/          # GNOME Shell extension (GNOME 45 & 46 ESM)
-│   ├── metadata.json   # Extension metadata (UUID: antigravity-token-watcher@github.com/gthomakos14)
+│   ├── metadata.json   # Extension metadata (UUID: antigravity-token-watcher@gthomakos14.github.com)
 │   ├── extension.js    # PanelMenu.Button, async subprocess, and menu UI
 │   ├── prefs.js        # Adw.PreferencesWindow settings dialog
 │   ├── stylesheet.css  # GNOME Shell panel and menu styles
@@ -96,7 +96,7 @@ This compiles the optimized Rust binary `target/release/token-watcher` and copie
 ```bash
 make install
 ```
-This installs the extension bundle into `~/.local/share/gnome-shell/extensions/antigravity-token-watcher@github.com/gthomakos14`.
+This installs the extension bundle into `~/.local/share/gnome-shell/extensions/antigravity-token-watcher@gthomakos14.github.com`.
 
 ### 3. Activating in GNOME Shell
 Because your desktop runs **GNOME Shell 46 on Wayland**, GNOME Shell loads newly added extension files into its runtime upon session login:

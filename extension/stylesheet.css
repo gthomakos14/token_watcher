@@ -145,6 +145,11 @@
     font-weight: 500;
 }
 
-.antigravity-action-btn:hover {
+.antigravity-action-btn:hover,
+.antigravity-action-btn:focus {
     background-color: rgba(255, 255, 255, 0.14);
+}
+
+.antigravity-action-btn:active {
+    background-color: rgba(255, 255, 255, 0.22);
 }

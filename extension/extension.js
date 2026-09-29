@@ -157,7 +157,9 @@ class AntigravityTokenIndicator extends PanelMenu.Button {
 
         // Actions row
         const actionsItem = new PopupMenu.PopupBaseMenuItem({
-            reactive: false,
+            reactive: true,
+            activate: false,
+            hover: false,
             can_focus: false,
         });
         const actionsBox = new St.BoxLayout({
@@ -170,9 +172,21 @@ class AntigravityTokenIndicator extends PanelMenu.Button {
             label: _('Refresh'),
             style_class: 'button antigravity-action-btn',
             x_expand: true,
+            reactive: true,
+            can_focus: true,
+            track_hover: true,
         });
-        refreshBtn.connect('clicked', () => {
-            this._fetchStatus();
+        refreshBtn.connect('clicked', async () => {
+            refreshBtn.reactive = false;
+            refreshBtn.label = _('Refreshing…');
+            try {
+                await this._fetchStatus();
+            } catch (e) {
+                console.error('[Antigravity Token Watcher] Refresh failed:', e);
+            } finally {
+                refreshBtn.label = _('Refresh');
+                refreshBtn.reactive = true;
+            }
         });
         actionsBox.add_child(refreshBtn);
 
@@ -181,6 +195,9 @@ class AntigravityTokenIndicator extends PanelMenu.Button {
             label: _('Open IDE'),
             style_class: 'button antigravity-action-btn',
             x_expand: true,
+            reactive: true,
+            can_focus: true,
+            track_hover: true,
         });
         openIdeBtn.connect('clicked', () => {
             this.menu.close();
@@ -198,6 +215,9 @@ class AntigravityTokenIndicator extends PanelMenu.Button {
             label: _('Settings'),
             style_class: 'button antigravity-action-btn',
             x_expand: true,
+            reactive: true,
+            can_focus: true,
+            track_hover: true,
         });
         prefsBtn.connect('clicked', () => {
             this.menu.close();
@@ -253,37 +273,42 @@ class AntigravityTokenIndicator extends PanelMenu.Button {
         });
     }
 
-    async _fetchStatus() {
-        const bin = this._getBinaryPath();
-        try {
-            const proc = new Gio.Subprocess({
-                argv: [bin, '--json'],
-                flags: Gio.SubprocessFlags.STDOUT_PIPE | Gio.SubprocessFlags.STDERR_PIPE,
-            });
-            proc.init(null);
+    _fetchStatus() {
+        return new Promise(resolve => {
+            const bin = this._getBinaryPath();
+            try {
+                const proc = new Gio.Subprocess({
+                    argv: [bin, '--json'],
+                    flags: Gio.SubprocessFlags.STDOUT_PIPE | Gio.SubprocessFlags.STDERR_PIPE,
+                });
+                proc.init(null);
 
-            proc.communicate_utf8_async(null, null, (obj, res) => {
-                try {
-                    const [, stdout, stderr] = proc.communicate_utf8_finish(res);
-                    if (proc.get_successful() && stdout) {
-                        const data = JSON.parse(stdout);
-                        if (!data.error) {
-                            this._latestData = data;
-                            this._renderPanel(data);
-                            this._renderMenu(data);
-                            return;
+                proc.communicate_utf8_async(null, null, (obj, res) => {
+                    try {
+                        const [, stdout, stderr] = proc.communicate_utf8_finish(res);
+                        if (proc.get_successful() && stdout) {
+                            const data = JSON.parse(stdout.trim());
+                            if (!data.error) {
+                                this._latestData = data;
+                                this._renderPanel(data);
+                                this._renderMenu(data);
+                                resolve(data);
+                                return;
+                            }
                         }
+                        if (stderr) {
+                            console.error('[Antigravity Token Watcher] stderr:', stderr);
+                        }
+                    } catch (e) {
+                        console.error('[Antigravity Token Watcher] Parse error:', e);
                     }
-                    if (stderr) {
-                        console.error('[Antigravity Token Watcher] stderr:', stderr);
-                    }
-                } catch (e) {
-                    console.error('[Antigravity Token Watcher] Parse error:', e);
-                }
-            });
-        } catch (e) {
-            console.error('[Antigravity Token Watcher] Execution error:', e);
-        }
+                    resolve(null);
+                });
+            } catch (e) {
+                console.error('[Antigravity Token Watcher] Execution error:', e);
+                resolve(null);
+            }
+        });
     }
 
     _renderPanel(data) {
@@ -416,13 +441,15 @@ class AntigravityTokenIndicator extends PanelMenu.Button {
             });
 
             // Layout progress bar proportionally when allocated
-            track.connect('notify::allocation', () => {
+            const updateFill = () => {
                 const totalWidth = track.get_width();
                 if (totalWidth > 0) {
                     const fillWidth = Math.max(3, Math.round((m.remaining_percentage / 100.0) * totalWidth));
                     fill.set_width(fillWidth);
                 }
-            });
+            };
+            track.connect('notify::allocation', updateFill);
+            updateFill();
 
             track.add_child(fill);
             card.add_child(track);

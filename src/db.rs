@@ -64,8 +64,8 @@ pub fn read_token_report(db_path: &Path) -> Result<TokenReport, String> {
 
     let rows = stmt
         .query_map([], |row| {
-            let key: String = row.get(0)?;
-            let value: String = row.get(1)?;
+            let key: String = row.get("key")?;
+            let value: String = row.get("value")?;
             Ok((key, value))
         })
         .map_err(|e| format!("Failed to query ItemTable: {}", e))?;
