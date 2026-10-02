@@ -137,7 +137,7 @@ pub fn get_first_field<'a>(data: &'a [u8], target_field: u32) -> Option<ProtoVal
     get_fields(data, target_field).into_iter().next()
 }
 
-fn format_duration_until(target_timestamp: i64) -> String {
+pub fn format_duration_until(target_timestamp: i64) -> String {
     let now = Utc::now().timestamp();
     let diff = target_timestamp - now;
     if diff <= 0 {

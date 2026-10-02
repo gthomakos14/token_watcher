@@ -61,6 +61,17 @@
     margin-top: 2px;
 }
 
+.antigravity-active-model-badge {
+    font-size: 0.78em;
+    font-weight: 600;
+    background-color: rgba(16, 185, 129, 0.2);
+    color: #34d399;
+    border-radius: 4px;
+    padding: 2px 6px;
+    align-self: flex-start;
+    margin-top: 2px;
+}
+
 /* Models Section */
 .antigravity-models-box {
     spacing: 10px;

@@ -8,14 +8,17 @@ A GNOME Shell extension and high-performance Rust core for monitoring Google Ant
 
 ## Features
 
-- **Blazingly Fast Rust Backend**: Built in Rust to parse Antigravity's local SQLite database (`state.vscdb`) and protobuf wire format in under **2 milliseconds**.
-- **Real-time Quota Display**: Displays current quota percentage for primary models (e.g. `⚡ 86%` or `Flash: 86% | Claude: 80%`).
-- **Instant Reactive Updates**: Monitors `state.vscdb` via `Gio.FileMonitor` (`inotify`) to update the top bar as soon as Antigravity uses tokens or completes a prompt.
+- **Blazingly Fast Rust Backend**: Built in Rust with smart local caching for sub-millisecond execution and minimal system overhead.
+- **Dual Support (CLI-First + IDE SQLite Fallback)**:
+  - **CLI-First**: Directly interrogates the `agy` CLI (`/usage` and `/model` print-mode commands) for real-time, non-consuming live quota and active model synchronization.
+  - **SQLite Fallback**: Retains full zero-copy wire-format protobuf parsing of `state.vscdb` when using the Antigravity IDE.
+- **Real-time Quota Display**: Displays current quota percentage for primary models (e.g. `⚡ 76%` or `Flash: 76% | Claude: 13%`).
+- **Instant Reactive Updates**: Monitors `~/.gemini/antigravity-cli/history.jsonl` and `state.vscdb` via `Gio.FileMonitor` (`inotify`) to update the top bar as soon as a prompt or turn completes.
 - **Detailed Popup Menu**:
-  - User account name, email, and subscription plan tier (`Starter Quota`, etc.).
-  - Per-model quota breakdown (Gemini Flash, Gemini Pro, Claude Sonnet, Claude Opus, GPT-OSS).
+  - User account name, email, subscription plan tier (`Starter Quota`), and active model badge.
+  - Model quota pools (Gemini Flash & Pro pool, Claude & GPT pool).
   - Visual color-coded progress bars (Green > 50%, Amber 20–50%, Red < 20%).
-  - Time remaining until quota reset countdown.
+  - Time remaining until weekly quota reset countdown.
   - "Refresh" and "Open Antigravity IDE" quick action buttons.
 - **Configurable Preferences**:
   - Display format: Percentage only, Model + Percentage, Dual Flash/Claude view, or Icon only.

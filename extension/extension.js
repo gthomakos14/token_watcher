@@ -20,7 +20,11 @@ class AntigravityTokenIndicator extends PanelMenu.Button {
         this._debounceId = null;
         this._fileMonitor = null;
         this._monitorId = null;
+        this._historyMonitor = null;
+        this._historyMonitorId = null;
         this._latestData = null;
+        // Tracks { track, signalId } pairs so we can disconnect before destroy_all_children()
+        this._trackSignals = [];
 
         this._buildPanelButton();
         this._buildMenuContainer();
@@ -131,10 +135,16 @@ class AntigravityTokenIndicator extends PanelMenu.Button {
             text: 'Starter Quota',
             style_class: 'antigravity-plan-badge',
         });
+        this._activeModelLabel = new St.Label({
+            text: '',
+            style_class: 'antigravity-active-model-badge',
+            visible: false,
+        });
 
         this._headerBox.add_child(this._userNameLabel);
         this._headerBox.add_child(this._userEmailLabel);
         this._headerBox.add_child(this._planBadgeLabel);
+        this._headerBox.add_child(this._activeModelLabel);
         this._headerSection.add_child(this._headerBox);
         this.menu.addMenuItem(this._headerSection);
 
@@ -180,7 +190,7 @@ class AntigravityTokenIndicator extends PanelMenu.Button {
             refreshBtn.reactive = false;
             refreshBtn.label = _('Refreshing…');
             try {
-                await this._fetchStatus();
+                await this._fetchStatus(true);
             } catch (e) {
                 console.error('[Antigravity Token Watcher] Refresh failed:', e);
             } finally {
@@ -232,6 +242,22 @@ class AntigravityTokenIndicator extends PanelMenu.Button {
     _setupFileMonitor() {
         try {
             const home = GLib.get_home_dir();
+
+            // 1. CLI activity monitor (~/.gemini/antigravity-cli/history.jsonl)
+            const historyPath = GLib.build_filenamev([home, '.gemini', 'antigravity-cli', 'history.jsonl']);
+            const historyFile = Gio.File.new_for_path(historyPath);
+
+            if (historyFile.query_exists(null)) {
+                this._historyMonitor = historyFile.monitor_file(Gio.FileMonitorFlags.NONE, null);
+                this._historyMonitorId = this._historyMonitor.connect('changed', (monitor, file, otherFile, eventType) => {
+                    if (eventType === Gio.FileMonitorEvent.CHANGES_DONE_HINT ||
+                        eventType === Gio.FileMonitorEvent.CHANGED) {
+                        this._debouncedRefresh(true);
+                    }
+                });
+            }
+
+            // 2. IDE database monitor (~/.config/Antigravity/.../state.vscdb)
             const dbPath = GLib.build_filenamev([home, '.config', 'Antigravity', 'User', 'globalStorage', 'state.vscdb']);
             const dbFile = Gio.File.new_for_path(dbPath);
 
@@ -240,7 +266,7 @@ class AntigravityTokenIndicator extends PanelMenu.Button {
                 this._monitorId = this._fileMonitor.connect('changed', (monitor, file, otherFile, eventType) => {
                     if (eventType === Gio.FileMonitorEvent.CHANGES_DONE_HINT ||
                         eventType === Gio.FileMonitorEvent.CHANGED) {
-                        this._debouncedRefresh();
+                        this._debouncedRefresh(false);
                     }
                 });
             }
@@ -249,13 +275,13 @@ class AntigravityTokenIndicator extends PanelMenu.Button {
         }
     }
 
-    _debouncedRefresh() {
+    _debouncedRefresh(force = false) {
         if (this._debounceId) {
             GLib.source_remove(this._debounceId);
         }
-        this._debounceId = GLib.timeout_add(GLib.PRIORITY_DEFAULT, 500, () => {
+        this._debounceId = GLib.timeout_add(GLib.PRIORITY_DEFAULT, 1000, () => {
             this._debounceId = null;
-            this._fetchStatus();
+            this._fetchStatus(force);
             return GLib.SOURCE_REMOVE;
         });
     }
@@ -268,17 +294,21 @@ class AntigravityTokenIndicator extends PanelMenu.Button {
 
         const interval = Math.max(5, this._settings.get_int('refresh-interval'));
         this._timeoutId = GLib.timeout_add_seconds(GLib.PRIORITY_DEFAULT, interval, () => {
-            this._fetchStatus();
+            this._fetchStatus(false);
             return GLib.SOURCE_CONTINUE;
         });
     }
 
-    _fetchStatus() {
+    _fetchStatus(forceRefresh = false) {
         return new Promise(resolve => {
             const bin = this._getBinaryPath();
             try {
+                const argv = [bin, '--json'];
+                if (forceRefresh) {
+                    argv.push('--refresh');
+                }
                 const proc = new Gio.Subprocess({
-                    argv: [bin, '--json'],
+                    argv,
                     flags: Gio.SubprocessFlags.STDOUT_PIPE | Gio.SubprocessFlags.STDERR_PIPE,
                 });
                 proc.init(null);
@@ -361,8 +391,8 @@ class AntigravityTokenIndicator extends PanelMenu.Button {
                 this._label.set_text('N/A');
             }
         } else if (format === 'dual') {
-            const flash = models.find(m => m.name.includes('Flash'));
-            const claude = models.find(m => m.name.includes('Claude') || m.name.includes('Sonnet'));
+            const flash = models.find(m => m.name.includes('Flash') || m.name.includes('Gemini'));
+            const claude = models.find(m => m.name.includes('Claude') || m.name.includes('Sonnet') || m.name.includes('GPT'));
             if (flash && claude) {
                 this._label.set_text(`⚡ ${flash.remaining_percentage.toFixed(0)}% | 🧠 ${claude.remaining_percentage.toFixed(0)}%`);
             } else if (primaryModel) {
@@ -384,8 +414,21 @@ class AntigravityTokenIndicator extends PanelMenu.Button {
         } else {
             this._planBadgeLabel.visible = false;
         }
+        if (data.selected_model_name) {
+            this._activeModelLabel.set_text(`Active Model: ${data.selected_model_name}`);
+            this._activeModelLabel.visible = true;
+        } else {
+            this._activeModelLabel.visible = false;
+        }
 
         // Models list
+        // Disconnect stale allocation signal handlers before wiping the old widgets.
+        // Without this, destroyed tracks keep firing notify::allocation callbacks on
+        // detached actors, spamming gnome-shell logs and causing the refresh to hang.
+        for (const { track, signalId } of this._trackSignals)
+            track.disconnect(signalId);
+        this._trackSignals = [];
+
         this._modelsBox.destroy_all_children();
         const models = data.models || [];
         const showBadge = this._settings.get_boolean('show-badge');
@@ -448,7 +491,9 @@ class AntigravityTokenIndicator extends PanelMenu.Button {
                     fill.set_width(fillWidth);
                 }
             };
-            track.connect('notify::allocation', updateFill);
+            // Store signal ID so we can disconnect it before the next destroy_all_children() call
+            const sigId = track.connect('notify::allocation', updateFill);
+            this._trackSignals.push({ track, signalId: sigId });
             updateFill();
 
             track.add_child(fill);
@@ -484,10 +529,19 @@ class AntigravityTokenIndicator extends PanelMenu.Button {
             this._fileMonitor.cancel();
             this._fileMonitor = null;
         }
+        if (this._historyMonitor && this._historyMonitorId) {
+            this._historyMonitor.disconnect(this._historyMonitorId);
+            this._historyMonitor.cancel();
+            this._historyMonitor = null;
+        }
         if (this._settings && this._settingsChangedId) {
             this._settings.disconnect(this._settingsChangedId);
             this._settingsChangedId = null;
         }
+        // Disconnect all remaining allocation signal handlers
+        for (const { track, signalId } of this._trackSignals)
+            track.disconnect(signalId);
+        this._trackSignals = [];
         super.destroy();
     }
 });

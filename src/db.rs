@@ -34,6 +34,12 @@ pub fn parse_selected_model_id(pref_raw: &str) -> Option<u32> {
                     // val_bytes has field 1 (string)
                     if let Some(inner_b64) = crate::parser::get_first_field(val_bytes, 1).and_then(|v| v.as_str()) {
                         if let Ok(id_bytes) = BASE64.decode(inner_b64) {
+                            if let Some(id) = crate::parser::get_first_field(&id_bytes, 2).and_then(|v| v.as_varint()) {
+                                return Some(id as u32);
+                            }
+                            if let Some(id) = crate::parser::get_first_field(&id_bytes, 1).and_then(|v| v.as_varint()) {
+                                return Some(id as u32);
+                            }
                             let mut offset = 0;
                             if let Some(id) = crate::parser::read_varint(&id_bytes, &mut offset) {
                                 return Some(id as u32);
