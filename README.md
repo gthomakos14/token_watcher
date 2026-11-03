@@ -35,7 +35,7 @@ A GNOME Shell extension and high-performance Rust core for monitoring Google Ant
 
 ```
 token_watcher/
-├── Cargo.toml          # Rust package dependencies (rusqlite, base64, serde, chrono)
+├── Cargo.toml          # Rust package dependencies (rusqlite, base64, serde, chrono, chrono-tz)
 ├── src/                # Rust core engine
 │   ├── main.rs         # CLI interface (--json, --summary, human report)
 │   ├── recency.rs      # Picks the most recently prompted provider
@@ -61,7 +61,9 @@ token_watcher/
 
 On each run, `token-watcher` compares the newest prompt in `~/.claude/history.jsonl` with the newest prompt in `~/.gemini/antigravity-cli/history.jsonl` and the newest file in `~/.gemini/antigravity/conversations` (Antigravity IDE activity). The later one wins. Slash commands such as `/model` are not counted as prompts. If `claude` isn't installed, Antigravity is always shown.
 
-Claude usage comes from `claude -p /usage --output-format json --no-session-persistence`, which uses no tokens and writes no transcript. Its session and weekly limits appear as cards in the popup, and the top bar shows the lowest remaining percentage, since every limit applies at once. Reports are cached separately in `~/.cache/antigravity-token-watcher/claude-cache.json`.
+Claude usage comes from `claude -p /usage --output-format json --no-session-persistence`, which uses no tokens and writes no transcript. Its session and weekly limits appear as cards in the popup, and the top bar shows the lowest remaining percentage, since every limit applies at once. Reports are cached separately in `~/.cache/antigravity-token-watcher/claude-cache.json`. A fresh fetch takes a few seconds and contacts Anthropic's servers; cached reads are instant.
+
+Reset times are read in the time zone that `/usage` names (for example `(America/New_York)`) and shown in your system time zone. If no zone is named, or the name isn't recognized, the system time zone is used.
 
 The `/usage` output is undocumented human-readable text. If its format changes, the last cached report is shown for up to 7 days and `token-watcher` then reports an error.
 
