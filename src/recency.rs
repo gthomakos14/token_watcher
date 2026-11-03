@@ -76,6 +76,54 @@ pub fn most_recent_provider() -> Provider {
 mod tests {
     use super::*;
 
+    use std::time::{Duration, SystemTime};
+
+    #[test]
+    fn read_tail_returns_small_files_whole() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("history.jsonl");
+        std::fs::write(&path, "{\"display\":\"hi\",\"timestamp\":1}\n").unwrap();
+        assert_eq!(read_tail(&path).as_deref(), Some("{\"display\":\"hi\",\"timestamp\":1}\n"));
+    }
+
+    #[test]
+    fn read_tail_keeps_only_the_end_of_large_files() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("history.jsonl");
+        let line = "{\"display\":\"old prompt\",\"timestamp\":1}\n";
+        let mut text = line.repeat((2 * HISTORY_TAIL_BYTES as usize) / line.len());
+        text.push_str("{\"display\":\"newest\",\"timestamp\":999}\n");
+        std::fs::write(&path, &text).unwrap();
+
+        let tail = read_tail(&path).unwrap();
+        assert_eq!(tail.len() as u64, HISTORY_TAIL_BYTES);
+        assert!(text.ends_with(&tail));
+        assert_eq!(last_prompt_in_history(&tail), Some(999));
+    }
+
+    #[test]
+    fn read_tail_of_a_missing_file_is_none() {
+        assert_eq!(read_tail(Path::new("/nonexistent/history.jsonl")), None);
+    }
+
+    #[test]
+    fn newest_mtime_picks_the_latest_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let base = SystemTime::UNIX_EPOCH + Duration::from_secs(1_700_000_000);
+        for (name, offset) in [("a.pb", 10), ("b.pb", 30), ("c.pb", 20)] {
+            let file = std::fs::File::create(dir.path().join(name)).unwrap();
+            file.set_modified(base + Duration::from_secs(offset)).unwrap();
+        }
+        assert_eq!(newest_mtime_ms(dir.path()), Some((1_700_000_030) * 1000));
+    }
+
+    #[test]
+    fn newest_mtime_of_an_empty_or_missing_dir_is_none() {
+        let dir = tempfile::tempdir().unwrap();
+        assert_eq!(newest_mtime_ms(dir.path()), None);
+        assert_eq!(newest_mtime_ms(Path::new("/nonexistent/conversations")), None);
+    }
+
     #[test]
     fn newest_prompt_wins() {
         assert_eq!(choose(Some(200), Some(100)), Provider::Claude);

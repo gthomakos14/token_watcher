@@ -94,3 +94,57 @@ pub fn read_token_report(db_path: &Path) -> Result<TokenReport, String> {
 
     parse_user_status(&raw_status, selected_id)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::parser::tests::{field_bytes, field_varint, varint};
+
+    const SENTINEL: &str = "last_selected_agent_model_sentinel_key";
+
+    /// Builds modelPreferences as stored: base64(1 { 1: key, 2 { 1: base64(id_bytes) } }).
+    fn prefs(key: &str, id_bytes: &[u8]) -> String {
+        let value = field_bytes(1, BASE64.encode(id_bytes).as_bytes());
+        let entry = [field_bytes(1, key.as_bytes()), field_bytes(2, &value)].concat();
+        BASE64.encode(field_bytes(1, &entry))
+    }
+
+    #[test]
+    fn reads_the_id_from_field_2() {
+        assert_eq!(parse_selected_model_id(&prefs(SENTINEL, &field_varint(2, 42))), Some(42));
+    }
+
+    #[test]
+    fn falls_back_to_field_1() {
+        assert_eq!(parse_selected_model_id(&prefs(SENTINEL, &field_varint(1, 7))), Some(7));
+    }
+
+    #[test]
+    fn falls_back_to_a_bare_varint() {
+        // 0x80 0x01 = 128 as a raw varint; as a protobuf key it would be field 16, so
+        // neither field 1 nor 2 matches.
+        assert_eq!(parse_selected_model_id(&prefs(SENTINEL, &varint(128))), Some(128));
+    }
+
+    #[test]
+    fn finds_the_sentinel_among_other_entries() {
+        let other = field_bytes(1, &field_bytes(1, b"some_other_key"));
+        let wanted = BASE64.decode(prefs(SENTINEL, &field_varint(2, 5))).unwrap();
+        let raw = BASE64.encode([other, wanted].concat());
+        assert_eq!(parse_selected_model_id(&raw), Some(5));
+    }
+
+    #[test]
+    fn other_keys_and_bad_input_give_none() {
+        assert_eq!(parse_selected_model_id(&prefs("another_key", &field_varint(2, 42))), None);
+        assert_eq!(parse_selected_model_id("not base64!"), None);
+        assert_eq!(parse_selected_model_id(""), None);
+        assert_eq!(parse_selected_model_id(&prefs(SENTINEL, &[])), None);
+    }
+
+    #[test]
+    fn missing_database_is_an_error() {
+        let err = read_token_report(Path::new("/nonexistent/state.vscdb")).unwrap_err();
+        assert!(err.contains("does not exist"));
+    }
+}
