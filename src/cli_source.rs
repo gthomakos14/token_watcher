@@ -103,11 +103,11 @@ fn run_agy_json(agy_path: &Path, slash_cmd: &str) -> Result<String, String> {
         .arg("--output-format")
         .arg("json")
         .output()
-        .map_err(|e| format!("Failed to execute agy {}: {}", slash_cmd, e))?;
+        .map_err(|e| format!("Failed to execute agy {slash_cmd}: {e}"))?;
 
     if !output.status.success() {
         let err = String::from_utf8_lossy(&output.stderr);
-        return Err(format!("agy {} exited with error: {}", slash_cmd, err));
+        return Err(format!("agy {slash_cmd} exited with error: {err}"));
     }
 
     Ok(String::from_utf8_lossy(&output.stdout).to_string())
@@ -116,16 +116,15 @@ fn run_agy_json(agy_path: &Path, slash_cmd: &str) -> Result<String, String> {
 /// Resolves the cache directory from `XDG_CACHE_HOME` and `HOME`. Per the XDG spec, an
 /// empty `XDG_CACHE_HOME` counts as unset.
 fn cache_dir(xdg_cache_home: Option<String>, home: Option<String>) -> Result<PathBuf, String> {
-    if let Some(xdg) = xdg_cache_home.filter(|x| !x.is_empty()) {
-        Ok(PathBuf::from(xdg).join("antigravity-token-watcher"))
-    } else if let Some(home) = home {
-        Ok(PathBuf::from(home).join(".cache").join("antigravity-token-watcher"))
-    } else {
-        Err("Neither XDG_CACHE_HOME nor HOME is set".to_string())
-    }
+    let base = match (xdg_cache_home.filter(|x| !x.is_empty()), home) {
+        (Some(xdg), _) => PathBuf::from(xdg),
+        (None, Some(home)) => PathBuf::from(home).join(".cache"),
+        (None, None) => return Err("Neither XDG_CACHE_HOME nor HOME is set".to_string()),
+    };
+    Ok(base.join("antigravity-token-watcher"))
 }
 
-fn cache_file_name(provider: Provider) -> &'static str {
+const fn cache_file_name(provider: Provider) -> &'static str {
     match provider {
         Provider::Antigravity => "cache.json",
         Provider::Claude => "claude-cache.json",
@@ -144,7 +143,9 @@ pub fn read_cached_report(provider: Provider, max_age_secs: u64) -> Option<Token
 fn read_cached_report_at(path: &Path, max_age_secs: u64, now: i64) -> Option<TokenReport> {
     let data = std::fs::read_to_string(path).ok()?;
     let cached: CachedReport = serde_json::from_str(&data).ok()?;
-    if (now - cached.timestamp).abs() <= max_age_secs as i64 {
+    // A TTL too large for i64 means "never expires", rather than wrapping negative.
+    let max_age = i64::try_from(max_age_secs).unwrap_or(i64::MAX);
+    if (now - cached.timestamp).abs() <= max_age {
         Some(cached.report)
     } else {
         None
@@ -154,6 +155,9 @@ fn read_cached_report_at(path: &Path, max_age_secs: u64, now: i64) -> Option<Tok
 pub fn write_cached_report(report: &TokenReport) -> Result<(), String> {
     write_cached_report_at(&cache_path(report.provider)?, report, Utc::now().timestamp())
 }
+
+/// Makes each temp cache file name unique within this process.
+static WRITE_SEQ: AtomicU64 = AtomicU64::new(0);
 
 fn write_cached_report_at(path: &Path, report: &TokenReport, now: i64) -> Result<(), String> {
     if let Some(parent) = path.parent() {
@@ -166,7 +170,6 @@ fn write_cached_report_at(path: &Path, report: &TokenReport, now: i64) -> Result
     let json = serde_json::to_string_pretty(&cached).map_err(|e| e.to_string())?;
     // Write to a private temp file and rename it into place, so a concurrent run never
     // reads a half-written cache. Rename is atomic within the same directory.
-    static WRITE_SEQ: AtomicU64 = AtomicU64::new(0);
     let seq = WRITE_SEQ.fetch_add(1, Ordering::Relaxed);
     let tmp = path.with_extension(format!("json.{}.{}.tmp", std::process::id(), seq));
     if let Err(e) = std::fs::write(&tmp, json).and_then(|()| std::fs::rename(&tmp, path)) {
@@ -205,6 +208,54 @@ fn run_agy_usage_and_model(agy_bin: &Path) -> Result<(String, String), String> {
     Ok((usage_raw, model_raw))
 }
 
+/// Converts one agy usage group into a model card. `active_model_id` is the lowercased id of
+/// the model selected in agy, used to mark the group that contains it.
+fn model_from_group(group: AgyGroup, model_id: u32, active_model_id: &str) -> ModelQuota {
+    let bucket = group.buckets.as_ref().and_then(|b| b.first());
+    let fraction = bucket.and_then(|b| b.remaining_fraction).unwrap_or(1.0);
+    let remaining_pct = ((fraction * 100.0) * 10.0).round() / 10.0;
+    let used_pct = ((100.0 - remaining_pct) * 10.0).round() / 10.0;
+
+    let reset = bucket
+        .and_then(|b| b.reset_time.as_deref())
+        .and_then(|rt| DateTime::parse_from_rfc3339(rt).ok());
+    let reset_timestamp = reset.map(|dt| dt.timestamp());
+    let reset_time = reset.map(|dt| DateTime::<Local>::from(dt).format("%Y-%m-%d %H:%M:%S").to_string());
+    let time_until_reset = reset_timestamp.map(crate::parser::format_duration_until);
+
+    let name = group.name.to_lowercase();
+    let is_gemini = name.contains("gemini");
+    let is_3p = name.contains("claude") || name.contains("gpt");
+    let active_matches = |keywords: &[&str]| keywords.iter().any(|k| active_model_id.contains(k));
+    let is_selected = if is_gemini {
+        active_matches(&["gemini", "flash", "pro"])
+    } else if is_3p {
+        active_matches(&["claude", "opus", "sonnet", "gpt"])
+    } else {
+        false
+    };
+
+    let display_name = if is_gemini {
+        "Gemini (Flash & Pro)".to_string()
+    } else if is_3p {
+        "Claude & GPT (Sonnet, Opus, GPT-OSS)".to_string()
+    } else {
+        group.name
+    };
+
+    ModelQuota {
+        name: display_name,
+        id: model_id,
+        remaining_percentage: remaining_pct,
+        used_percentage: used_pct,
+        reset_timestamp,
+        reset_time,
+        time_until_reset,
+        badge: Some(if is_gemini { "Fast" } else { "Thinking" }.to_string()),
+        is_selected,
+    }
+}
+
 /// Builds a report from agy's /usage and /model JSON. `db_report` supplies user and plan
 /// details when available; otherwise `user_name` (from $USER) and a generic plan are used.
 fn report_from_agy_json(
@@ -214,9 +265,9 @@ fn report_from_agy_json(
     user_name: Option<String>,
 ) -> Result<TokenReport, String> {
     let usage_resp: AgyUsageResponse = serde_json::from_str(usage_raw)
-        .map_err(|e| format!("Failed to parse agy /usage JSON: {}", e))?;
+        .map_err(|e| format!("Failed to parse agy /usage JSON: {e}"))?;
     let model_resp: AgyModelResponse = serde_json::from_str(model_raw)
-        .map_err(|e| format!("Failed to parse agy /model JSON: {}", e))?;
+        .map_err(|e| format!("Failed to parse agy /model JSON: {e}"))?;
 
     let active_model_label = model_resp
         .command
@@ -240,75 +291,14 @@ fn report_from_agy_json(
 
     let mut models = Vec::new();
     let mut selected_model_id = None;
-
-    for (idx, g) in groups.into_iter().enumerate() {
-        let bucket = g.buckets.as_ref().and_then(|b| b.first());
-        let fraction = bucket.and_then(|b| b.remaining_fraction).unwrap_or(1.0);
-        let remaining_pct = ((fraction * 100.0) * 10.0).round() / 10.0;
-        let used_pct = ((100.0 - remaining_pct) * 10.0).round() / 10.0;
-
-        let mut reset_timestamp = None;
-        let mut reset_time_str = None;
-        let mut time_until_reset = None;
-
-        if let Some(b) = bucket {
-            if let Some(rt) = &b.reset_time {
-                if let Ok(dt) = DateTime::parse_from_rfc3339(rt) {
-                    let ts = dt.timestamp();
-                    reset_timestamp = Some(ts);
-                    let local_dt: DateTime<Local> = DateTime::from(dt);
-                    reset_time_str = Some(local_dt.format("%Y-%m-%d %H:%M:%S").to_string());
-                    time_until_reset = Some(crate::parser::format_duration_until(ts));
-                }
-            }
-        }
-
-        let is_gemini = g.name.to_lowercase().contains("gemini");
-        let is_3p = g.name.to_lowercase().contains("claude") || g.name.to_lowercase().contains("gpt");
-
-        let is_selected = if is_gemini {
-            active_model_id_str.contains("gemini")
-                || active_model_id_str.contains("flash")
-                || active_model_id_str.contains("pro")
-        } else if is_3p {
-            active_model_id_str.contains("claude")
-                || active_model_id_str.contains("opus")
-                || active_model_id_str.contains("sonnet")
-                || active_model_id_str.contains("gpt")
-        } else {
-            false
-        };
-
-        let model_id = (idx + 1) as u32;
-        if is_selected {
+    for (idx, group) in groups.into_iter().enumerate() {
+        // IDs are 1-based positions; there are only ever a handful of groups.
+        let model_id = u32::try_from(idx + 1).unwrap_or(u32::MAX);
+        let model = model_from_group(group, model_id, &active_model_id_str);
+        if model.is_selected {
             selected_model_id = Some(model_id);
         }
-
-        let display_name = if is_gemini {
-            "Gemini (Flash & Pro)".to_string()
-        } else if is_3p {
-            "Claude & GPT (Sonnet, Opus, GPT-OSS)".to_string()
-        } else {
-            g.name.clone()
-        };
-
-        let badge = if is_gemini {
-            Some("Fast".to_string())
-        } else {
-            Some("Thinking".to_string())
-        };
-
-        models.push(ModelQuota {
-            name: display_name,
-            id: model_id,
-            remaining_percentage: remaining_pct,
-            used_percentage: used_pct,
-            reset_timestamp,
-            reset_time: reset_time_str,
-            time_until_reset,
-            badge,
-            is_selected,
-        });
+        models.push(model);
     }
 
     let (mut user, mut plan) = match db_report {
@@ -345,6 +335,8 @@ fn report_from_agy_json(
 }
 
 #[cfg(test)]
+// Percentages here are computed by fixed rounding steps, so exact comparison is intended.
+#[allow(clippy::float_cmp)]
 mod tests {
     use super::*;
 
@@ -368,10 +360,6 @@ mod tests {
             }],
             fetched_at: 0,
         }
-    }
-
-    fn s(v: &str) -> Option<String> {
-        Some(v.to_string())
     }
 
     // --- binary lookup ---
@@ -550,15 +538,15 @@ mod tests {
 
     #[test]
     fn cache_dir_prefers_xdg_then_home() {
-        assert_eq!(cache_dir(s("/x"), s("/h")), Ok(PathBuf::from("/x/antigravity-token-watcher")));
-        assert_eq!(cache_dir(None, s("/h")), Ok(PathBuf::from("/h/.cache/antigravity-token-watcher")));
+        assert_eq!(cache_dir(Some("/x".into()), Some("/h".into())), Ok(PathBuf::from("/x/antigravity-token-watcher")));
+        assert_eq!(cache_dir(None, Some("/h".into())), Ok(PathBuf::from("/h/.cache/antigravity-token-watcher")));
         assert!(cache_dir(None, None).is_err());
     }
 
     #[test]
     fn empty_xdg_cache_home_counts_as_unset() {
-        assert_eq!(cache_dir(s(""), s("/h")), Ok(PathBuf::from("/h/.cache/antigravity-token-watcher")));
-        assert!(cache_dir(s(""), None).is_err());
+        assert_eq!(cache_dir(Some(String::new()), Some("/h".into())), Ok(PathBuf::from("/h/.cache/antigravity-token-watcher")));
+        assert!(cache_dir(Some(String::new()), None).is_err());
     }
 
     #[test]
@@ -589,14 +577,22 @@ mod tests {
 
     #[test]
     fn stale_cache_is_still_usable_as_a_fallback() {
+        const WEEK_SECS: u64 = 86400 * 7;
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("cache.json");
-        let week = 86400 * 7;
         write_cached_report_at(&path, &report(Provider::Antigravity, "Flash"), 0).unwrap();
 
         assert!(read_cached_report_at(&path, 60, 3600).is_none());
-        assert!(read_cached_report_at(&path, week, 3600).is_some());
-        assert!(read_cached_report_at(&path, week, week as i64 + 1).is_none());
+        assert!(read_cached_report_at(&path, WEEK_SECS, 3600).is_some());
+        assert!(read_cached_report_at(&path, WEEK_SECS, 86400 * 7 + 1).is_none());
+    }
+
+    #[test]
+    fn a_huge_ttl_never_expires() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("cache.json");
+        write_cached_report_at(&path, &report(Provider::Antigravity, "Flash"), 0).unwrap();
+        assert!(read_cached_report_at(&path, u64::MAX, 1_000_000_000).is_some());
     }
 
     #[test]
