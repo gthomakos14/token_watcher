@@ -28,6 +28,7 @@ disable:
 
 test:
 	cargo test
+	node --test extension-tests/*.test.mjs
 	cargo run -- --json
 
 # Benchmarks (require hyperfine: cargo install hyperfine). Results are written to bench/.

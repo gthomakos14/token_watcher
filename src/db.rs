@@ -142,6 +142,87 @@ mod tests {
         assert_eq!(parse_selected_model_id(&prefs(SENTINEL, &[])), None);
     }
 
+    /// Creates a state.vscdb-like database holding the given ItemTable rows.
+    fn database(rows: &[(&str, &str)]) -> (tempfile::TempDir, std::path::PathBuf) {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("state.vscdb");
+        let conn = Connection::open(&path).unwrap();
+        conn.execute("CREATE TABLE ItemTable (key TEXT UNIQUE ON CONFLICT REPLACE, value BLOB)", [])
+            .unwrap();
+        for (key, value) in rows {
+            conn.execute("INSERT INTO ItemTable (key, value) VALUES (?1, ?2)", [key, value]).unwrap();
+        }
+        (dir, path)
+    }
+
+    const STATUS_KEY: &str = "antigravityUnifiedStateSync.userStatus";
+    const PREFS_KEY: &str = "antigravityUnifiedStateSync.modelPreferences";
+
+    #[test]
+    fn reads_status_and_selected_model_from_sqlite() {
+        let status = crate::parser::tests::wrap_user_status(&crate::parser::tests::sample_inner());
+        let prefs = prefs(SENTINEL, &field_varint(2, 20));
+        let (_dir, path) = database(&[(STATUS_KEY, &status), (PREFS_KEY, &prefs), ("unrelated", "x")]);
+
+        let report = read_token_report(&path).unwrap();
+        assert_eq!(report.user.unwrap().name, "Ada");
+        assert_eq!(report.models.len(), 2);
+        assert_eq!(report.selected_model_id, Some(20));
+        assert_eq!(report.selected_model_name.as_deref(), Some("Claude Sonnet"));
+    }
+
+    #[test]
+    fn model_preferences_are_optional() {
+        let status = crate::parser::tests::wrap_user_status(&crate::parser::tests::sample_inner());
+        let (_dir, path) = database(&[(STATUS_KEY, &status)]);
+        let report = read_token_report(&path).unwrap();
+        assert_eq!(report.selected_model_id, None);
+    }
+
+    #[test]
+    fn missing_user_status_is_an_error() {
+        let (_dir, path) = database(&[(PREFS_KEY, "x")]);
+        assert!(read_token_report(&path).unwrap_err().contains("userStatus key not found"));
+    }
+
+    #[test]
+    fn corrupt_user_status_is_an_error() {
+        let (_dir, path) = database(&[(STATUS_KEY, "not base64!")]);
+        assert!(read_token_report(&path).unwrap_err().contains("Base64"));
+    }
+
+    #[test]
+    fn a_database_without_item_table_is_an_error() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("state.vscdb");
+        Connection::open(&path).unwrap().execute("CREATE TABLE Other (x)", []).unwrap();
+        assert!(read_token_report(&path).unwrap_err().starts_with("Failed to prepare"));
+    }
+
+    #[test]
+    fn a_file_that_is_not_sqlite_is_an_error() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("state.vscdb");
+        std::fs::write(&path, "this is not a database, just text that is long enough").unwrap();
+        assert!(read_token_report(&path).is_err());
+    }
+
+    #[test]
+    fn the_database_is_opened_read_only() {
+        let status = crate::parser::tests::wrap_user_status(&[]);
+        let (_dir, path) = database(&[(STATUS_KEY, &status)]);
+        let mut perms = std::fs::metadata(&path).unwrap().permissions();
+        perms.set_readonly(true);
+        std::fs::set_permissions(&path, perms).unwrap();
+        assert!(read_token_report(&path).is_ok(), "a read-only file must still be readable");
+    }
+
+    #[test]
+    fn default_path_is_under_home_config() {
+        let path = default_db_path().unwrap();
+        assert!(path.ends_with(".config/Antigravity/User/globalStorage/state.vscdb"));
+    }
+
     #[test]
     fn missing_database_is_an_error() {
         let err = read_token_report(Path::new("/nonexistent/state.vscdb")).unwrap_err();

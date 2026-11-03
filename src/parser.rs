@@ -452,14 +452,14 @@ pub(crate) mod tests {
 
     /// Wraps an inner user-status message the way state.vscdb stores it:
     /// base64(1 { 2 { 1: base64(inner) } }).
-    fn wrap_user_status(inner: &[u8]) -> String {
+    pub(crate) fn wrap_user_status(inner: &[u8]) -> String {
         let inner_b64 = BASE64.encode(inner);
         let f2 = field_bytes(1, inner_b64.as_bytes());
         let f1 = field_bytes(2, &f2);
         BASE64.encode(field_bytes(1, &f1))
     }
 
-    fn sample_inner() -> Vec<u8> {
+    pub(crate) fn sample_inner() -> Vec<u8> {
         let models = [
             field_bytes(1, &model("Gemini Flash", 10, 0.72, Some(4_000_000_000), Some("New"))),
             field_bytes(1, &model("Claude Sonnet", 20, 1.0, None, None)),

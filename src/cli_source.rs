@@ -1,6 +1,7 @@
 use crate::models::{ModelQuota, PlanInfo, Provider, TokenReport, UserInfo};
 use chrono::{DateTime, Local, Utc};
 use serde::{Deserialize, Serialize};
+use std::ffi::OsString;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -73,29 +74,26 @@ struct AgyModelData {
 }
 
 pub fn find_binary(name: &str) -> Option<PathBuf> {
-    if let Ok(home) = std::env::var("HOME") {
-        let p = PathBuf::from(&home).join(".local/bin").join(name);
-        if p.exists() {
-            return Some(p);
-        }
+    find_binary_in(name, &search_dirs(std::env::var_os("HOME"), std::env::var_os("PATH")))
+}
+
+/// Where to look for CLI binaries, in order: ~/.local/bin, $PATH, then the system dirs.
+/// ~/.local/bin comes first because GNOME Shell's PATH often leaves it out.
+fn search_dirs(home: Option<OsString>, path: Option<OsString>) -> Vec<PathBuf> {
+    let mut dirs = Vec::new();
+    if let Some(home) = home {
+        dirs.push(PathBuf::from(home).join(".local/bin"));
     }
-    if let Ok(path_var) = std::env::var("PATH") {
-        for dir in std::env::split_paths(&path_var) {
-            let p = dir.join(name);
-            if p.exists() {
-                return Some(p);
-            }
-        }
+    if let Some(path) = path {
+        dirs.extend(std::env::split_paths(&path));
     }
-    let p = PathBuf::from("/usr/local/bin").join(name);
-    if p.exists() {
-        return Some(p);
-    }
-    let p = PathBuf::from("/usr/bin").join(name);
-    if p.exists() {
-        return Some(p);
-    }
-    None
+    dirs.push(PathBuf::from("/usr/local/bin"));
+    dirs.push(PathBuf::from("/usr/bin"));
+    dirs
+}
+
+fn find_binary_in(name: &str, dirs: &[PathBuf]) -> Option<PathBuf> {
+    dirs.iter().map(|dir| dir.join(name)).find(|p| p.exists())
 }
 
 fn run_agy_json(agy_path: &Path, slash_cmd: &str) -> Result<String, String> {
@@ -180,8 +178,18 @@ fn write_cached_report_at(path: &Path, report: &TokenReport, now: i64) -> Result
 
 pub fn fetch_token_report_from_cli() -> Result<TokenReport, String> {
     let agy_bin = find_binary("agy").ok_or_else(|| "agy CLI binary not found in PATH or ~/.local/bin/agy".to_string())?;
+    let (usage_raw, model_raw) = run_agy_usage_and_model(&agy_bin)?;
 
-    // Concurrently fetch /usage and /model to minimize latency
+    // User and plan details come from state.vscdb when the IDE has one.
+    let db_report = crate::db::default_db_path()
+        .ok()
+        .and_then(|path| crate::db::read_token_report(&path).ok());
+    report_from_agy_json(&usage_raw, &model_raw, db_report, std::env::var("USER").ok())
+}
+
+/// Runs `agy /usage` and `agy /model` concurrently to minimize latency.
+fn run_agy_usage_and_model(agy_bin: &Path) -> Result<(String, String), String> {
+    let agy_bin = agy_bin.to_path_buf();
     let bin1 = agy_bin.clone();
     let usage_handle = std::thread::spawn(move || run_agy_json(&bin1, "/usage"));
 
@@ -194,10 +202,20 @@ pub fn fetch_token_report_from_cli() -> Result<TokenReport, String> {
     let model_raw = model_handle
         .join()
         .map_err(|_| "Model worker thread panicked".to_string())??;
+    Ok((usage_raw, model_raw))
+}
 
-    let usage_resp: AgyUsageResponse = serde_json::from_str(&usage_raw)
+/// Builds a report from agy's /usage and /model JSON. `db_report` supplies user and plan
+/// details when available; otherwise `user_name` (from $USER) and a generic plan are used.
+fn report_from_agy_json(
+    usage_raw: &str,
+    model_raw: &str,
+    db_report: Option<TokenReport>,
+    user_name: Option<String>,
+) -> Result<TokenReport, String> {
+    let usage_resp: AgyUsageResponse = serde_json::from_str(usage_raw)
         .map_err(|e| format!("Failed to parse agy /usage JSON: {}", e))?;
-    let model_resp: AgyModelResponse = serde_json::from_str(&model_raw)
+    let model_resp: AgyModelResponse = serde_json::from_str(model_raw)
         .map_err(|e| format!("Failed to parse agy /model JSON: {}", e))?;
 
     let active_model_label = model_resp
@@ -293,19 +311,13 @@ pub fn fetch_token_report_from_cli() -> Result<TokenReport, String> {
         });
     }
 
-    // Try reading user info and plan info from state.vscdb or fall back to system defaults
-    let (mut user, mut plan) = if let Ok(default_path) = crate::db::default_db_path() {
-        if let Ok(db_report) = crate::db::read_token_report(&default_path) {
-            (db_report.user, db_report.plan)
-        } else {
-            (None, None)
-        }
-    } else {
-        (None, None)
+    let (mut user, mut plan) = match db_report {
+        Some(db_report) => (db_report.user, db_report.plan),
+        None => (None, None),
     };
 
     if user.is_none() {
-        let name = std::env::var("USER").unwrap_or_else(|_| "Antigravity User".to_string());
+        let name = user_name.unwrap_or_else(|| "Antigravity User".to_string());
         user = Some(UserInfo {
             name,
             email: String::new(),
@@ -360,6 +372,180 @@ mod tests {
 
     fn s(v: &str) -> Option<String> {
         Some(v.to_string())
+    }
+
+    // --- binary lookup ---
+
+    #[test]
+    fn search_order_is_local_bin_then_path_then_system() {
+        let dirs = search_dirs(Some("/home/ada".into()), Some("/a:/b".into()));
+        let expected: Vec<PathBuf> = ["/home/ada/.local/bin", "/a", "/b", "/usr/local/bin", "/usr/bin"]
+            .iter()
+            .map(PathBuf::from)
+            .collect();
+        assert_eq!(dirs, expected);
+        assert_eq!(search_dirs(None, None), [PathBuf::from("/usr/local/bin"), PathBuf::from("/usr/bin")]);
+    }
+
+    #[test]
+    fn finds_the_first_matching_binary() {
+        let first = tempfile::tempdir().unwrap();
+        let second = tempfile::tempdir().unwrap();
+        std::fs::write(second.path().join("agy"), "").unwrap();
+        let dirs = [first.path().to_path_buf(), second.path().to_path_buf()];
+        assert_eq!(find_binary_in("agy", &dirs), Some(second.path().join("agy")));
+
+        std::fs::write(first.path().join("agy"), "").unwrap();
+        assert_eq!(find_binary_in("agy", &dirs), Some(first.path().join("agy")));
+        assert_eq!(find_binary_in("claude", &dirs), None);
+    }
+
+    // --- report_from_agy_json ---
+
+    const USAGE_JSON: &str = r#"{"command":{"name":"usage","data":{"groups":[
+        {"name":"Gemini models","description":"d","buckets":[
+            {"id":"b1","remaining_fraction":0.7234,"reset_time":"2030-01-01T00:00:00Z"}]},
+        {"name":"Claude and GPT models","buckets":[{"remaining_fraction":0.0}]},
+        {"name":"Other","buckets":[]}
+    ]}}}"#;
+
+    fn model_json(id: &str, label: &str) -> String {
+        format!(r#"{{"command":{{"name":"model","data":{{"id":"{id}","label":"{label}"}}}}}}"#)
+    }
+
+    #[test]
+    fn agy_groups_become_models() {
+        let r = report_from_agy_json(USAGE_JSON, &model_json("gemini-3-flash", "Gemini 3 Flash"), None, None).unwrap();
+        assert_eq!(r.provider, Provider::Antigravity);
+        let names: Vec<&str> = r.models.iter().map(|m| m.name.as_str()).collect();
+        assert_eq!(names, ["Gemini (Flash & Pro)", "Claude & GPT (Sonnet, Opus, GPT-OSS)", "Other"]);
+        let ids: Vec<u32> = r.models.iter().map(|m| m.id).collect();
+        assert_eq!(ids, [1, 2, 3]);
+
+        let gemini = &r.models[0];
+        assert_eq!(gemini.remaining_percentage, 72.3);
+        assert_eq!(gemini.used_percentage, 27.7);
+        assert_eq!(gemini.reset_timestamp, Some(1_893_456_000));
+        assert!(gemini.reset_time.is_some() && gemini.time_until_reset.is_some());
+        assert_eq!(gemini.badge.as_deref(), Some("Fast"));
+
+        assert_eq!(r.models[1].remaining_percentage, 0.0);
+        assert_eq!(r.models[1].badge.as_deref(), Some("Thinking"));
+        // No bucket means no known usage, which is shown as full.
+        assert_eq!(r.models[2].remaining_percentage, 100.0);
+        assert_eq!(r.models[2].reset_timestamp, None);
+    }
+
+    #[test]
+    fn agy_active_model_selects_its_group() {
+        let cases = [
+            ("gemini-3-pro", Some(1)),
+            ("FLASH-lite", Some(1)),
+            ("claude-sonnet-4-5", Some(2)),
+            ("opus", Some(2)),
+            ("gpt-oss-120b", Some(2)),
+            ("mystery", None),
+            ("", None),
+        ];
+        for (id, expected) in cases {
+            let r = report_from_agy_json(USAGE_JSON, &model_json(id, "Label"), None, None).unwrap();
+            assert_eq!(r.selected_model_id, expected, "model id {id:?}");
+            let selected: Vec<u32> = r.models.iter().filter(|m| m.is_selected).map(|m| m.id).collect();
+            assert_eq!(selected, expected.into_iter().collect::<Vec<_>>(), "model id {id:?}");
+        }
+        let r = report_from_agy_json(USAGE_JSON, &model_json("x", "Shown Label"), None, None).unwrap();
+        assert_eq!(r.selected_model_name.as_deref(), Some("Shown Label"));
+    }
+
+    #[test]
+    fn agy_user_and_plan_come_from_sqlite_when_available() {
+        let mut db = report(Provider::Antigravity, "db");
+        db.user = Some(UserInfo { name: "Ada".into(), email: "ada@example.com".into(), profile_url: None });
+        db.plan = Some(PlanInfo { id: "pro".into(), name: "Pro Plan".into(), description: None });
+        let r = report_from_agy_json(USAGE_JSON, &model_json("x", "X"), Some(db), Some("glenn".into())).unwrap();
+        assert_eq!(r.user.unwrap().email, "ada@example.com");
+        assert_eq!(r.plan.unwrap().name, "Pro Plan");
+        // Models always come from agy, never from SQLite.
+        assert_eq!(r.models.len(), 3);
+    }
+
+    #[test]
+    fn agy_user_and_plan_fall_back_to_defaults() {
+        let r = report_from_agy_json(USAGE_JSON, &model_json("x", "X"), None, Some("glenn".into())).unwrap();
+        assert_eq!(r.user.unwrap().name, "glenn");
+        assert_eq!(r.plan.unwrap().name, "Antigravity Quota");
+
+        let r = report_from_agy_json(USAGE_JSON, &model_json("x", "X"), None, None).unwrap();
+        assert_eq!(r.user.unwrap().name, "Antigravity User");
+
+        // A SQLite report missing user details still gets the defaults.
+        let r = report_from_agy_json(USAGE_JSON, "{}", Some(report(Provider::Antigravity, "db")), None).unwrap();
+        assert!(r.user.is_some() && r.plan.is_some());
+    }
+
+    #[test]
+    fn agy_empty_or_partial_json_gives_no_models() {
+        for usage in ["{}", r#"{"command":null}"#, r#"{"command":{"data":{}}}"#] {
+            let r = report_from_agy_json(usage, "{}", None, None).unwrap();
+            assert!(r.models.is_empty(), "{usage}");
+            assert_eq!(r.selected_model_name, None);
+        }
+    }
+
+    #[test]
+    fn agy_invalid_json_is_an_error() {
+        let err = report_from_agy_json("nope", "{}", None, None).unwrap_err();
+        assert!(err.starts_with("Failed to parse agy /usage JSON"));
+        let err = report_from_agy_json("{}", "nope", None, None).unwrap_err();
+        assert!(err.starts_with("Failed to parse agy /model JSON"));
+    }
+
+    #[test]
+    fn agy_invalid_reset_time_is_skipped() {
+        let usage = r#"{"command":{"data":{"groups":[{"name":"Gemini","buckets":[{"remaining_fraction":0.5,"reset_time":"tomorrow"}]}]}}}"#;
+        let r = report_from_agy_json(usage, "{}", None, None).unwrap();
+        assert_eq!(r.models[0].remaining_percentage, 50.0);
+        assert_eq!(r.models[0].reset_timestamp, None);
+    }
+
+    // --- running agy ---
+
+    #[test]
+    fn run_agy_passes_print_mode_arguments() {
+        let dir = tempfile::tempdir().unwrap();
+        let agy = crate::test_util::fake_cli(dir.path(), "agy", r#"echo "$*""#);
+        let _guard = crate::test_util::spawn_guard();
+        assert_eq!(run_agy_json(&agy, "/usage").unwrap(), "-p /usage --output-format json\n");
+    }
+
+    #[test]
+    fn run_agy_failure_includes_stderr() {
+        let dir = tempfile::tempdir().unwrap();
+        let agy = crate::test_util::fake_cli(dir.path(), "agy", "echo 'not signed in' >&2; exit 1");
+        let _guard = crate::test_util::spawn_guard();
+        let err = run_agy_json(&agy, "/model").unwrap_err();
+        assert_eq!(err, "agy /model exited with error: not signed in\n");
+
+        let err = run_agy_json(Path::new("/nonexistent/agy"), "/usage").unwrap_err();
+        assert!(err.starts_with("Failed to execute agy /usage"));
+    }
+
+    #[test]
+    fn usage_and_model_are_both_fetched() {
+        let dir = tempfile::tempdir().unwrap();
+        let agy = crate::test_util::fake_cli(dir.path(), "agy", r#"echo "output for $2""#);
+        let _guard = crate::test_util::spawn_guard();
+        let (usage, model) = run_agy_usage_and_model(&agy).unwrap();
+        assert_eq!(usage, "output for /usage\n");
+        assert_eq!(model, "output for /model\n");
+    }
+
+    #[test]
+    fn either_agy_command_failing_fails_the_fetch() {
+        let dir = tempfile::tempdir().unwrap();
+        let agy = crate::test_util::fake_cli(dir.path(), "agy", r#"[ "$2" = /model ] && exit 1; echo ok"#);
+        let _guard = crate::test_util::spawn_guard();
+        assert!(run_agy_usage_and_model(&agy).unwrap_err().starts_with("agy /model exited"));
     }
 
     #[test]

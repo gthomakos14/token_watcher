@@ -43,14 +43,17 @@ token_watcher/
 │   ├── cli_source.rs   # Antigravity usage via the agy CLI, report caching
 │   ├── db.rs           # SQLite reader for state.vscdb (read-only mode)
 │   ├── parser.rs       # Protobuf wire parser & quota extractor
-│   └── models.rs       # Data structures & JSON serialization
+│   ├── models.rs       # Data structures & JSON serialization
+│   └── test_util.rs    # Test-only helpers (fake CLI scripts)
 ├── extension/          # GNOME Shell extension (GNOME 45 & 46 ESM)
 │   ├── metadata.json   # Extension metadata (UUID: antigravity-token-watcher@gthomakos14.github.com)
 │   ├── extension.js    # PanelMenu.Button, async subprocess, and menu UI
+│   ├── format.js       # Pure display logic (panel text, colors), unit tested with Node
 │   ├── prefs.js        # Adw.PreferencesWindow settings dialog
 │   ├── stylesheet.css  # GNOME Shell panel and menu styles
 │   ├── icons/          # Antigravity and Claude icons
 │   └── schemas/        # GSettings schema & compiled definitions
+├── extension-tests/    # Node tests for extension/format.js
 ├── Makefile            # Build, test, package, and installation automation
 └── README.md
 ```

@@ -57,10 +57,14 @@ pub fn most_recent_provider() -> Provider {
     if crate::cli_source::find_binary("claude").is_none() {
         return Provider::Antigravity;
     }
-    let Ok(home) = std::env::var("HOME").map(PathBuf::from) else {
-        return Provider::Antigravity;
-    };
+    match std::env::var_os("HOME") {
+        Some(home) => most_recent_provider_in(&PathBuf::from(home)),
+        None => Provider::Antigravity,
+    }
+}
 
+/// Compares the history files under `home`; assumes the claude CLI is installed.
+fn most_recent_provider_in(home: &Path) -> Provider {
     let claude_last = read_tail(&home.join(".claude/history.jsonl"))
         .as_deref()
         .and_then(last_prompt_in_history);
@@ -122,6 +126,69 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         assert_eq!(newest_mtime_ms(dir.path()), None);
         assert_eq!(newest_mtime_ms(Path::new("/nonexistent/conversations")), None);
+    }
+
+    /// A fake home with the given Claude and agy history lines and IDE conversation mtime.
+    fn home_with(claude: &[(&str, i64)], agy: &[(&str, i64)], ide_mtime_secs: Option<u64>) -> tempfile::TempDir {
+        let home = tempfile::tempdir().unwrap();
+        let write_history = |rel: &str, entries: &[(&str, i64)]| {
+            if entries.is_empty() {
+                return;
+            }
+            let path = home.path().join(rel);
+            std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+            let lines: String = entries
+                .iter()
+                .map(|(display, ts)| format!("{{\"display\":\"{display}\",\"timestamp\":{ts}}}\n"))
+                .collect();
+            std::fs::write(path, lines).unwrap();
+        };
+        write_history(".claude/history.jsonl", claude);
+        write_history(".gemini/antigravity-cli/history.jsonl", agy);
+        if let Some(secs) = ide_mtime_secs {
+            let dir = home.path().join(".gemini/antigravity/conversations");
+            std::fs::create_dir_all(&dir).unwrap();
+            let file = std::fs::File::create(dir.join("c.pb")).unwrap();
+            file.set_modified(SystemTime::UNIX_EPOCH + Duration::from_secs(secs)).unwrap();
+        }
+        home
+    }
+
+    #[test]
+    fn latest_claude_prompt_selects_claude() {
+        let home = home_with(&[("fix it", 2_000_000)], &[("hello", 1_000_000)], Some(500));
+        assert_eq!(most_recent_provider_in(home.path()), Provider::Claude);
+    }
+
+    #[test]
+    fn latest_agy_cli_prompt_selects_antigravity() {
+        let home = home_with(&[("fix it", 1_000_000)], &[("hello", 2_000_000)], None);
+        assert_eq!(most_recent_provider_in(home.path()), Provider::Antigravity);
+    }
+
+    #[test]
+    fn recent_ide_activity_selects_antigravity() {
+        // IDE mtime is in seconds (here 3000 s = 3,000,000 ms), history timestamps in ms.
+        let home = home_with(&[("fix it", 2_000_000)], &[], Some(3000));
+        assert_eq!(most_recent_provider_in(home.path()), Provider::Antigravity);
+    }
+
+    #[test]
+    fn claude_slash_commands_do_not_switch_to_claude() {
+        let home = home_with(&[("fix it", 1_000_000), ("/usage", 9_000_000)], &[("hello", 2_000_000)], None);
+        assert_eq!(most_recent_provider_in(home.path()), Provider::Antigravity);
+    }
+
+    #[test]
+    fn only_claude_history_selects_claude() {
+        let home = home_with(&[("fix it", 1)], &[], None);
+        assert_eq!(most_recent_provider_in(home.path()), Provider::Claude);
+    }
+
+    #[test]
+    fn empty_home_selects_antigravity() {
+        let home = home_with(&[], &[], None);
+        assert_eq!(most_recent_provider_in(home.path()), Provider::Antigravity);
     }
 
     #[test]

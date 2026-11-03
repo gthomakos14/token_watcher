@@ -24,6 +24,10 @@ struct AuthStatus {
 
 /// Runs `claude` with a timeout, since this is polled and a hung process must not pile up.
 fn run_claude(claude_path: &Path, args: &[&str]) -> Result<String, String> {
+    run_with_timeout(claude_path, args, COMMAND_TIMEOUT)
+}
+
+fn run_with_timeout(claude_path: &Path, args: &[&str], timeout: Duration) -> Result<String, String> {
     let mut child = Command::new(claude_path)
         .args(args)
         .current_dir(std::env::temp_dir())
@@ -37,7 +41,7 @@ fn run_claude(claude_path: &Path, args: &[&str]) -> Result<String, String> {
     loop {
         match child.try_wait().map_err(|e| e.to_string())? {
             Some(_) => break,
-            None if started.elapsed() > COMMAND_TIMEOUT => {
+            None if started.elapsed() > timeout => {
                 let _ = child.kill();
                 let _ = child.wait();
                 return Err(format!("claude {} timed out", args.join(" ")));
@@ -182,31 +186,39 @@ pub fn fetch_token_report() -> Result<TokenReport, String> {
         &claude_bin,
         &["-p", "/usage", "--output-format", "json", "--no-session-persistence"],
     )?;
-    let usage: UsageResponse = serde_json::from_str(&usage_raw)
+
+    // Account details are decoration, so a failure here must not lose the usage numbers.
+    let auth_raw = auth_handle.join().ok().and_then(Result::ok);
+    report_from_claude_json(&usage_raw, auth_raw.as_deref(), std::env::var("USER").ok(), Utc::now())
+}
+
+/// Builds a report from `claude -p /usage` JSON and, optionally, `claude auth status --json`.
+fn report_from_claude_json(
+    usage_raw: &str,
+    auth_raw: Option<&str>,
+    user_name: Option<String>,
+    now: DateTime<Utc>,
+) -> Result<TokenReport, String> {
+    let usage: UsageResponse = serde_json::from_str(usage_raw)
         .map_err(|e| format!("Failed to parse claude /usage JSON: {}", e))?;
     if usage.is_error {
         return Err(format!("claude /usage failed: {}", usage.result.unwrap_or_default()));
     }
 
     let text = usage.result.unwrap_or_default();
-    let models = parse_usage_text(&text, Utc::now());
+    let models = parse_usage_text(&text, now);
     if models.is_empty() {
         return Err(format!("No usage limits found in claude /usage output: {}", text));
     }
 
-    // Account details are decoration, so a failure here must not lose the usage numbers.
-    let auth = auth_handle
-        .join()
-        .ok()
-        .and_then(Result::ok)
-        .and_then(|raw| serde_json::from_str::<AuthStatus>(&raw).ok());
+    let auth = auth_raw.and_then(|raw| serde_json::from_str::<AuthStatus>(raw).ok());
     let email = auth.as_ref().and_then(|a| a.email.clone()).unwrap_or_default();
     let subscription = auth.and_then(|a| a.subscription_type);
 
     Ok(TokenReport {
         provider: Provider::Claude,
         user: Some(UserInfo {
-            name: std::env::var("USER").unwrap_or_else(|_| "Claude User".to_string()),
+            name: user_name.unwrap_or_else(|| "Claude User".to_string()),
             email,
             profile_url: None,
         }),
@@ -218,7 +230,7 @@ pub fn fetch_token_report() -> Result<TokenReport, String> {
         selected_model_id: None,
         selected_model_name: None,
         models,
-        fetched_at: Utc::now().timestamp(),
+        fetched_at: now.timestamp(),
     })
 }
 
@@ -308,5 +320,152 @@ mod tests {
     fn plan_names() {
         assert_eq!(plan_name(Some("pro")), "Claude Pro");
         assert_eq!(plan_name(None), "Claude");
+        assert_eq!(plan_name(Some("")), "Claude");
+        assert_eq!(plan_name(Some("max")), "Claude Max");
+    }
+
+    // --- reset parsing edge cases ---
+
+    #[test]
+    fn reset_accepts_at_and_spaced_meridiem() {
+        let now = at(2026, 11, 2, 9, 0);
+        assert_eq!(parse_reset("Nov 4 at 9:59pm", now), Some(at(2026, 11, 4, 21, 59)));
+        assert_eq!(parse_reset("Nov 4, 9:59 PM", now), Some(at(2026, 11, 4, 21, 59)));
+        assert_eq!(parse_reset("12am", now), Some(at(2026, 11, 3, 0, 0)));
+        assert_eq!(parse_reset("12pm", now), Some(at(2026, 11, 2, 12, 0)));
+    }
+
+    #[test]
+    fn unreadable_resets_are_none() {
+        let now = at(2026, 11, 2, 9, 0);
+        assert_eq!(parse_reset("soon", now), None);
+        assert_eq!(parse_reset("Smarch 4, 1pm", now), None);
+        assert_eq!(parse_reset("13pm", now), None);
+        assert_eq!(parse_reset("", now), None);
+    }
+
+    #[test]
+    fn a_reset_exactly_now_without_a_date_is_tomorrow() {
+        assert_eq!(parse_reset("9am", at(2026, 3, 1, 9, 0)), Some(at(2026, 3, 2, 9, 0)));
+    }
+
+    #[test]
+    fn usage_percentages_are_clamped_and_decimals_kept() {
+        let models = parse_usage_text(
+            "Current session: 150% used\nCurrent week: 12.5% used\nCurrent month: -3% used",
+            utc(2026, 1, 1, 0, 0),
+        );
+        let used: Vec<f32> = models.iter().map(|m| m.used_percentage).collect();
+        assert_eq!(used, [100.0, 12.5, 0.0]);
+        assert!(models.iter().all(|m| m.reset_time.is_none()), "no 'resets' text means no reset");
+    }
+
+    #[test]
+    fn non_numeric_usage_lines_are_skipped() {
+        assert!(parse_usage_text("Current session: lots% used", utc(2026, 1, 1, 0, 0)).is_empty());
+        assert!(parse_usage_text("Current : 5% used", utc(2026, 1, 1, 0, 0)).is_empty());
+    }
+
+    #[test]
+    fn split_reset_zone_handles_odd_parentheses() {
+        assert_eq!(split_reset_zone("1pm (America/New_York"), ("1pm", None));
+        assert_eq!(split_reset_zone("  1pm  "), ("1pm", None));
+    }
+
+    // --- report_from_claude_json ---
+
+    const USAGE_OK: &str = r#"{"type":"result","is_error":false,"result":"Current session: 4% used · resets 1pm (UTC)\nCurrent week (all models): 1% used"}"#;
+    const AUTH_OK: &str = r#"{"loggedIn":true,"email":"ada@example.com","subscriptionType":"pro"}"#;
+
+    #[test]
+    fn builds_a_full_report() {
+        let now = utc(2026, 11, 2, 9, 0);
+        let r = report_from_claude_json(USAGE_OK, Some(AUTH_OK), Some("ada".into()), now).unwrap();
+
+        assert_eq!(r.provider, Provider::Claude);
+        let user = r.user.unwrap();
+        assert_eq!((user.name.as_str(), user.email.as_str()), ("ada", "ada@example.com"));
+        let plan = r.plan.unwrap();
+        assert_eq!((plan.id.as_str(), plan.name.as_str()), ("pro", "Claude Pro"));
+        assert_eq!(r.models.len(), 2);
+        assert_eq!(r.models[0].reset_timestamp, Some(utc(2026, 11, 2, 13, 0).timestamp()));
+        assert_eq!(r.fetched_at, now.timestamp());
+        assert_eq!(r.selected_model_id, None);
+    }
+
+    #[test]
+    fn missing_or_bad_auth_keeps_the_usage() {
+        let now = utc(2026, 11, 2, 9, 0);
+        for auth in [None, Some("not json"), Some("{}")] {
+            let r = report_from_claude_json(USAGE_OK, auth, None, now).unwrap();
+            assert_eq!(r.models.len(), 2);
+            assert_eq!(r.user.as_ref().unwrap().name, "Claude User");
+            assert_eq!(r.user.as_ref().unwrap().email, "");
+            assert_eq!(r.plan.as_ref().unwrap().name, "Claude");
+        }
+    }
+
+    #[test]
+    fn usage_errors_are_reported() {
+        let now = utc(2026, 11, 2, 9, 0);
+        let err = report_from_claude_json(r#"{"is_error":true,"result":"Not logged in"}"#, None, None, now).unwrap_err();
+        assert_eq!(err, "claude /usage failed: Not logged in");
+
+        let err = report_from_claude_json("garbage", None, None, now).unwrap_err();
+        assert!(err.starts_with("Failed to parse claude /usage JSON"));
+
+        let err = report_from_claude_json(r#"{"result":"Total cost: $0"}"#, None, None, now).unwrap_err();
+        assert!(err.starts_with("No usage limits found"));
+
+        let err = report_from_claude_json("{}", None, None, now).unwrap_err();
+        assert!(err.starts_with("No usage limits found"));
+    }
+
+    // --- running the CLI ---
+
+    #[test]
+    fn run_returns_stdout_and_passes_arguments() {
+        let dir = tempfile::tempdir().unwrap();
+        let cli = crate::test_util::fake_cli(dir.path(), "claude", r#"echo "args: $*""#);
+        let _guard = crate::test_util::spawn_guard();
+        assert_eq!(run_claude(&cli, &["-p", "/usage"]).unwrap(), "args: -p /usage\n");
+    }
+
+    #[test]
+    fn run_uses_the_temp_dir_and_no_stdin() {
+        let dir = tempfile::tempdir().unwrap();
+        // `cat` returns at once only because stdin is /dev/null.
+        let cli = crate::test_util::fake_cli(dir.path(), "claude", "cat; pwd -P");
+        let _guard = crate::test_util::spawn_guard();
+        let out = run_with_timeout(&cli, &[], Duration::from_secs(5)).unwrap();
+        let expected = std::env::temp_dir().canonicalize().unwrap();
+        assert_eq!(out.trim(), expected.to_str().unwrap());
+    }
+
+    #[test]
+    fn run_reports_a_failing_exit() {
+        let dir = tempfile::tempdir().unwrap();
+        let cli = crate::test_util::fake_cli(dir.path(), "claude", "echo partial; exit 3");
+        let _guard = crate::test_util::spawn_guard();
+        let err = run_claude(&cli, &["auth"]).unwrap_err();
+        assert!(err.starts_with("claude auth exited with"), "{err}");
+    }
+
+    #[test]
+    fn run_kills_a_hung_cli() {
+        let dir = tempfile::tempdir().unwrap();
+        let cli = crate::test_util::fake_cli(dir.path(), "claude", "exec sleep 30");
+        let _guard = crate::test_util::spawn_guard();
+        let started = Instant::now();
+        let err = run_with_timeout(&cli, &["-p", "/usage"], Duration::from_millis(200)).unwrap_err();
+        assert_eq!(err, "claude -p /usage timed out");
+        assert!(started.elapsed() < Duration::from_secs(5));
+    }
+
+    #[test]
+    fn run_reports_a_missing_binary() {
+        let _guard = crate::test_util::spawn_guard();
+        let err = run_claude(Path::new("/nonexistent/claude"), &[]).unwrap_err();
+        assert!(err.starts_with("Failed to execute claude"));
     }
 }

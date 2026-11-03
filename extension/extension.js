@@ -10,6 +10,8 @@ import * as PanelMenu from 'resource:///org/gnome/shell/ui/panelMenu.js';
 import * as PopupMenu from 'resource:///org/gnome/shell/ui/popupMenu.js';
 import { Extension, gettext as _ } from 'resource:///org/gnome/shell/extensions/extension.js';
 
+import * as Format from './format.js';
+
 const AntigravityTokenIndicator = GObject.registerClass(
 class AntigravityTokenIndicator extends PanelMenu.Button {
     _init(extension) {
@@ -332,15 +334,13 @@ class AntigravityTokenIndicator extends PanelMenu.Button {
                 proc.communicate_utf8_async(null, null, (obj, res) => {
                     try {
                         const [, stdout, stderr] = proc.communicate_utf8_finish(res);
-                        if (proc.get_successful() && stdout) {
-                            const data = JSON.parse(stdout.trim());
-                            if (!data.error) {
-                                this._latestData = data;
-                                this._renderPanel(data);
-                                this._renderMenu(data);
-                                resolve(data);
-                                return;
-                            }
+                        const data = Format.reportFromOutput(proc.get_successful(), stdout);
+                        if (data) {
+                            this._latestData = data;
+                            this._renderPanel(data);
+                            this._renderMenu(data);
+                            resolve(data);
+                            return;
                         }
                         if (stderr) {
                             console.error('[Antigravity Token Watcher] stderr:', stderr);
@@ -363,7 +363,7 @@ class AntigravityTokenIndicator extends PanelMenu.Button {
         }
         this._iconProvider = provider;
 
-        const iconName = provider === 'claude' ? 'claude.svg' : 'antigravity.svg';
+        const iconName = Format.providerIconName(provider);
         const iconPath = GLib.build_filenamev([this._extension.path, 'icons', iconName]);
         const iconFile = Gio.File.new_for_path(iconPath);
         if (iconFile.query_exists(null)) {
@@ -372,11 +372,9 @@ class AntigravityTokenIndicator extends PanelMenu.Button {
     }
 
     _renderPanel(data) {
-        const isClaude = data.provider === 'claude';
         this._updateProviderIcon(data.provider);
 
         const format = this._settings.get_string('display-format');
-        const primaryKeyword = this._settings.get_string('primary-model').toLowerCase();
         const warnLow = this._settings.get_boolean('warn-low-quota');
         const threshold = this._settings.get_int('low-quota-threshold');
 
@@ -386,61 +384,25 @@ class AntigravityTokenIndicator extends PanelMenu.Button {
         }
         this._label.visible = true;
 
-        const models = data.models || [];
-        // Claude's limits all apply at once, so the tightest one is what matters.
-        let primaryModel = isClaude
-            ? models.reduce((low, m) => (!low || m.remaining_percentage < low.remaining_percentage ? m : low), null)
-            : models.find(m => m.name.toLowerCase().includes(primaryKeyword));
-        if (!primaryModel && models.length > 0) {
-            primaryModel = models[0];
-        }
+        const primaryModel = Format.pickPrimaryModel(data, this._settings.get_string('primary-model'));
 
         // Color coding
         this._label.remove_style_class_name('antigravity-status-good');
         this._label.remove_style_class_name('antigravity-status-warn');
         this._label.remove_style_class_name('antigravity-status-critical');
-
-        if (primaryModel && warnLow) {
-            if (primaryModel.remaining_percentage <= threshold) {
-                this._label.add_style_class_name('antigravity-status-critical');
-            } else if (primaryModel.remaining_percentage <= threshold + 20) {
-                this._label.add_style_class_name('antigravity-status-warn');
-            } else {
-                this._label.add_style_class_name('antigravity-status-good');
-            }
+        const status = Format.statusClass(primaryModel, warnLow, threshold);
+        if (status) {
+            this._label.add_style_class_name(status);
         }
 
-        if (format === 'percentage') {
-            if (primaryModel) {
-                this._label.set_text(`${primaryModel.remaining_percentage.toFixed(0)}%`);
-            } else {
-                this._label.set_text('N/A');
-            }
-        } else if (format === 'model-and-percentage') {
-            if (primaryModel) {
-                const shortName = primaryModel.name.includes('Flash') ? 'Flash' :
-                                  primaryModel.name.includes('Pro') ? 'Pro' :
-                                  primaryModel.name.includes('Claude') ? 'Claude' :
-                                  primaryModel.name.split(' ')[0];
-                this._label.set_text(`${shortName}: ${primaryModel.remaining_percentage.toFixed(0)}%`);
-            } else {
-                this._label.set_text('N/A');
-            }
-        } else if (format === 'dual') {
-            const flash = models.find(m => m.name.includes('Flash') || m.name.includes('Gemini'));
-            const claude = models.find(m => m.name.includes('Claude') || m.name.includes('Sonnet') || m.name.includes('GPT'));
-            if (isClaude && models.length >= 2) {
-                this._label.set_text(`${models[0].remaining_percentage.toFixed(0)}% | ${models[1].remaining_percentage.toFixed(0)}%`);
-            } else if (flash && claude) {
-                this._label.set_text(`⚡ ${flash.remaining_percentage.toFixed(0)}% | 🧠 ${claude.remaining_percentage.toFixed(0)}%`);
-            } else if (primaryModel) {
-                this._label.set_text(`${primaryModel.remaining_percentage.toFixed(0)}%`);
-            }
+        const text = Format.panelText(data, format, primaryModel);
+        if (text !== null) {
+            this._label.set_text(text);
         }
     }
 
     _renderMenu(data) {
-        this._openIdeBtn.visible = data.provider !== 'claude';
+        this._openIdeBtn.visible = !Format.isClaude(data);
 
         // User Header
         if (data.user) {
@@ -518,17 +480,14 @@ class AntigravityTokenIndicator extends PanelMenu.Button {
             });
 
             const fill = new St.Widget({
-                style_class: 'antigravity-bar-fill ' +
-                    (m.remaining_percentage > 50 ? 'antigravity-bar-fill-good' :
-                     m.remaining_percentage > 20 ? 'antigravity-bar-fill-warn' : 'antigravity-bar-fill-critical'),
+                style_class: `antigravity-bar-fill ${Format.barFillClass(m.remaining_percentage)}`,
             });
 
             // Layout progress bar proportionally when allocated
             const updateFill = () => {
                 const totalWidth = track.get_width();
                 if (totalWidth > 0) {
-                    const fillWidth = Math.max(3, Math.round((m.remaining_percentage / 100.0) * totalWidth));
-                    fill.set_width(fillWidth);
+                    fill.set_width(Format.barFillWidth(m.remaining_percentage, totalWidth));
                 }
             };
             // Store signal ID so we can disconnect it before the next destroy_all_children() call
@@ -540,10 +499,8 @@ class AntigravityTokenIndicator extends PanelMenu.Button {
             card.add_child(track);
 
             // Bottom Row: Reset info
-            if (m.time_until_reset || m.reset_time) {
-                const resetText = m.time_until_reset ?
-                    `Resets in ${m.time_until_reset} (${m.reset_time || ''})` :
-                    `Resets: ${m.reset_time}`;
+            const resetText = Format.resetText(m);
+            if (resetText) {
                 const resetLabel = new St.Label({
                     text: resetText,
                     style_class: 'antigravity-model-reset',
