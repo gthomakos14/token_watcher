@@ -9,7 +9,7 @@ A GNOME Shell extension and high-performance Rust core for monitoring Google Ant
 ## Features
 
 - **Automatic Claude / Antigravity Switching**: The logo, top bar percentage, and popup follow whichever tool received a prompt last.
-- **Blazingly Fast Rust Backend**: Built in Rust with smart local caching for sub-millisecond execution and minimal system overhead.
+- **Blazingly Fast Rust Backend**: Built in Rust with local caching, so a normal poll from the extension (a cache hit) takes about 1.2 ms and 5 MiB of memory. See [Performance](#performance).
 - **Dual Support (CLI-First + IDE SQLite Fallback)**:
   - **CLI-First**: Directly interrogates the `agy` CLI (`/usage` and `/model` print-mode commands) for real-time, non-consuming live quota and active model synchronization.
   - **SQLite Fallback**: Retains full zero-copy wire-format protobuf parsing of `state.vscdb` when using the Antigravity IDE.
@@ -61,7 +61,7 @@ token_watcher/
 
 On each run, `token-watcher` compares the newest prompt in `~/.claude/history.jsonl` with the newest prompt in `~/.gemini/antigravity-cli/history.jsonl` and the newest file in `~/.gemini/antigravity/conversations` (Antigravity IDE activity). The later one wins. Slash commands such as `/model` are not counted as prompts. If `claude` isn't installed, Antigravity is always shown.
 
-Claude usage comes from `claude -p /usage --output-format json --no-session-persistence`, which uses no tokens and writes no transcript. Its session and weekly limits appear as cards in the popup, and the top bar shows the lowest remaining percentage, since every limit applies at once. Reports are cached separately in `~/.cache/antigravity-token-watcher/claude-cache.json`. A fresh fetch takes a few seconds and contacts Anthropic's servers; cached reads are instant.
+Claude usage comes from `claude -p /usage --output-format json --no-session-persistence`, which uses no tokens and writes no transcript. Its session and weekly limits appear as cards in the popup, and the top bar shows the lowest remaining percentage, since every limit applies at once. Reports are cached separately in `~/.cache/antigravity-token-watcher/claude-cache.json`. A fresh fetch contacts Anthropic's servers and takes about 0.7 s; cache hits take about 1.1 ms.
 
 Reset times are read in the time zone that `/usage` names (for example `(America/New_York)`) and shown in your system time zone. If no zone is named, or the name isn't recognized, the system time zone is used.
 
@@ -71,9 +71,35 @@ Use `--provider claude` or `--provider antigravity` to override the automatic ch
 
 ---
 
+## Performance
+
+Measured with [hyperfine](https://github.com/sharkdp/hyperfine) on a release build: AMD Ryzen 5 7600, Linux 7.0, rustc 1.98.1, November 2026. Each figure is the wall time of one whole `token-watcher --json` process, from start to exit.
+
+**Local paths** (no network; at least 200 runs each after 20 warmup runs):
+
+| Scenario | Mean | Range | Peak memory |
+|:---|---:|---:|---:|
+| Cache hit, provider chosen automatically (what the extension runs) | 1.2 ms ± 0.1 | 1.0–4.0 ms | 5.1 MiB |
+| Cache hit, `--provider claude` | 1.1 ms ± 0.1 | 0.9–4.7 ms | 5.1 MiB |
+| Cache hit, `--provider antigravity` | 1.1 ms ± 0.1 | 0.9–1.6 ms | 5.2 MiB |
+| SQLite read (`--db`) | 1.4 ms ± 0.1 | 1.2–1.9 ms | 6.7 MiB |
+
+**Fresh fetches** (`--refresh`; these call the CLIs over the network, so 5 runs each):
+
+| Scenario | Mean | Range | Peak memory |
+|:---|---:|---:|---:|
+| Claude (`claude -p /usage`) | 663 ms ± 22 | 653–703 ms | 263 MiB |
+| Antigravity (`agy` `/usage` and `/model`) | 2.8 s ± 2.0 | 1.7–6.4 s | 201 MiB |
+
+Fresh fetches are dominated by the `claude` and `agy` CLIs, including their startup and network round trips, so they depend on your connection and on those services. Peak memory for a fresh fetch is the CLI's, not `token-watcher`'s. Fetches happen at most once per cache TTL (60 s by default), or when you press Refresh; every other poll is a cache hit.
+
+To reproduce, install hyperfine (`cargo install hyperfine`) and run `make bench`. That writes the tables to `bench/local.md` and `bench/network.md`. `make bench-local` skips the network fetches.
+
+---
+
 ## How the Rust Backend Works
 
-The Rust core (`token-watcher`) is engineered for sub-2 millisecond execution, zero-overhead local polling, and zero external network requests. It extracts quota details directly from the local Antigravity IDE storage.
+The SQLite path of the Rust core (`token-watcher`) makes no network requests and takes about 1.4 ms per run. It extracts quota details directly from the local Antigravity IDE storage. Fresh fetches through the `agy` and `claude` CLIs do go over the network (see [Performance](#performance)).
 
 ### 1. Read-Only SQLite State Access ([`src/db.rs`](file:///home/glenn/personal_projects/token_watcher/src/db.rs))
 - **Path Resolution**: Automatically targets Antigravity's global state store at `~/.config/Antigravity/User/globalStorage/state.vscdb` (or a custom path via `--db`).
