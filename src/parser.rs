@@ -1,4 +1,4 @@
-use crate::models::{ModelQuota, PlanInfo, TokenReport, UserInfo};
+use crate::models::{ModelQuota, PlanInfo, Provider, TokenReport, UserInfo};
 use base64::engine::general_purpose::STANDARD as BASE64;
 use base64::Engine;
 use chrono::{DateTime, Local, Utc};
@@ -263,6 +263,7 @@ pub fn parse_user_status(raw_val: &str, selected_model_id: Option<u32>) -> Resul
     }
 
     Ok(TokenReport {
+        provider: Provider::Antigravity,
         user,
         plan,
         selected_model_id,

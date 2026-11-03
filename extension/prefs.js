@@ -46,7 +46,7 @@ export default class AntigravityTokenWatcherPreferences extends ExtensionPrefere
         // Primary Model
         const primaryModelRow = new Adw.ComboRow({
             title: _('Primary Model'),
-            subtitle: _('Which model to prioritize for top bar percentage'),
+            subtitle: _('Which Antigravity model to prioritize for top bar percentage (Claude shows its tightest limit)'),
             model: new Gtk.StringList({
                 strings: [
                     'Gemini Flash',

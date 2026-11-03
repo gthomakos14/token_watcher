@@ -1,5 +1,13 @@
 use serde::{Deserialize, Serialize};
 
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum Provider {
+    #[default]
+    Antigravity,
+    Claude,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct UserInfo {
     pub name: String,
@@ -29,6 +37,9 @@ pub struct ModelQuota {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TokenReport {
+    // Defaulted so that caches written before Claude support still load.
+    #[serde(default)]
+    pub provider: Provider,
     pub user: Option<UserInfo>,
     pub plan: Option<PlanInfo>,
     pub selected_model_id: Option<u32>,

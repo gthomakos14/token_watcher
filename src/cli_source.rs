@@ -1,4 +1,4 @@
-use crate::models::{ModelQuota, PlanInfo, TokenReport, UserInfo};
+use crate::models::{ModelQuota, PlanInfo, Provider, TokenReport, UserInfo};
 use chrono::{DateTime, Local, Utc};
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
@@ -71,26 +71,26 @@ struct AgyModelData {
     is_default: Option<bool>,
 }
 
-pub fn find_agy_binary() -> Option<PathBuf> {
+pub fn find_binary(name: &str) -> Option<PathBuf> {
     if let Ok(home) = std::env::var("HOME") {
-        let p = PathBuf::from(&home).join(".local/bin/agy");
+        let p = PathBuf::from(&home).join(".local/bin").join(name);
         if p.exists() {
             return Some(p);
         }
     }
     if let Ok(path_var) = std::env::var("PATH") {
         for dir in std::env::split_paths(&path_var) {
-            let p = dir.join("agy");
+            let p = dir.join(name);
             if p.exists() {
                 return Some(p);
             }
         }
     }
-    let p = PathBuf::from("/usr/local/bin/agy");
+    let p = PathBuf::from("/usr/local/bin").join(name);
     if p.exists() {
         return Some(p);
     }
-    let p = PathBuf::from("/usr/bin/agy");
+    let p = PathBuf::from("/usr/bin").join(name);
     if p.exists() {
         return Some(p);
     }
@@ -114,7 +114,7 @@ fn run_agy_json(agy_path: &Path, slash_cmd: &str) -> Result<String, String> {
     Ok(String::from_utf8_lossy(&output.stdout).to_string())
 }
 
-pub fn cache_path() -> Result<PathBuf, String> {
+pub fn cache_path(provider: Provider) -> Result<PathBuf, String> {
     let dir = if let Ok(xdg) = std::env::var("XDG_CACHE_HOME") {
         PathBuf::from(xdg).join("antigravity-token-watcher")
     } else if let Ok(home) = std::env::var("HOME") {
@@ -122,11 +122,14 @@ pub fn cache_path() -> Result<PathBuf, String> {
     } else {
         return Err("Neither XDG_CACHE_HOME nor HOME is set".to_string());
     };
-    Ok(dir.join("cache.json"))
+    Ok(dir.join(match provider {
+        Provider::Antigravity => "cache.json",
+        Provider::Claude => "claude-cache.json",
+    }))
 }
 
-pub fn read_cached_report(max_age_secs: u64) -> Option<TokenReport> {
-    let path = cache_path().ok()?;
+pub fn read_cached_report(provider: Provider, max_age_secs: u64) -> Option<TokenReport> {
+    let path = cache_path(provider).ok()?;
     let data = std::fs::read_to_string(&path).ok()?;
     let cached: CachedReport = serde_json::from_str(&data).ok()?;
     let now = Utc::now().timestamp();
@@ -138,7 +141,7 @@ pub fn read_cached_report(max_age_secs: u64) -> Option<TokenReport> {
 }
 
 pub fn write_cached_report(report: &TokenReport) -> Result<(), String> {
-    let path = cache_path()?;
+    let path = cache_path(report.provider)?;
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
     }
@@ -147,12 +150,18 @@ pub fn write_cached_report(report: &TokenReport) -> Result<(), String> {
         report: report.clone(),
     };
     let json = serde_json::to_string_pretty(&cached).map_err(|e| e.to_string())?;
-    std::fs::write(&path, json).map_err(|e| e.to_string())?;
+    // Write to a private temp file and rename it into place, so a concurrent run never
+    // reads a half-written cache. Rename is atomic within the same directory.
+    let tmp = path.with_extension(format!("json.{}.tmp", std::process::id()));
+    if let Err(e) = std::fs::write(&tmp, json).and_then(|()| std::fs::rename(&tmp, &path)) {
+        let _ = std::fs::remove_file(&tmp);
+        return Err(e.to_string());
+    }
     Ok(())
 }
 
 pub fn fetch_token_report_from_cli() -> Result<TokenReport, String> {
-    let agy_bin = find_agy_binary().ok_or_else(|| "agy CLI binary not found in PATH or ~/.local/bin/agy".to_string())?;
+    let agy_bin = find_binary("agy").ok_or_else(|| "agy CLI binary not found in PATH or ~/.local/bin/agy".to_string())?;
 
     // Concurrently fetch /usage and /model to minimize latency
     let bin1 = agy_bin.clone();
@@ -295,6 +304,7 @@ pub fn fetch_token_report_from_cli() -> Result<TokenReport, String> {
     }
 
     Ok(TokenReport {
+        provider: Provider::Antigravity,
         user,
         plan,
         selected_model_id,

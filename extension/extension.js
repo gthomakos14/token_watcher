@@ -22,6 +22,9 @@ class AntigravityTokenIndicator extends PanelMenu.Button {
         this._monitorId = null;
         this._historyMonitor = null;
         this._historyMonitorId = null;
+        this._claudeHistoryMonitor = null;
+        this._claudeHistoryMonitorId = null;
+        this._iconProvider = null;
         this._latestData = null;
         // Tracks { track, signalId } pairs so we can disconnect before destroy_all_children()
         this._trackSignals = [];
@@ -201,7 +204,7 @@ class AntigravityTokenIndicator extends PanelMenu.Button {
         actionsBox.add_child(refreshBtn);
 
         // Open Antigravity IDE button
-        const openIdeBtn = new St.Button({
+        const openIdeBtn = this._openIdeBtn = new St.Button({
             label: _('Open IDE'),
             style_class: 'button antigravity-action-btn',
             x_expand: true,
@@ -256,6 +259,19 @@ class AntigravityTokenIndicator extends PanelMenu.Button {
                     }
                 });
             }
+
+            // Claude prompt monitor (~/.claude/history.jsonl). This only needs to switch the
+            // display, so it uses the cache rather than polling /usage on every prompt.
+            const claudeHistoryPath = GLib.build_filenamev([home, '.claude', 'history.jsonl']);
+            const claudeHistoryFile = Gio.File.new_for_path(claudeHistoryPath);
+
+            this._claudeHistoryMonitor = claudeHistoryFile.monitor_file(Gio.FileMonitorFlags.NONE, null);
+            this._claudeHistoryMonitorId = this._claudeHistoryMonitor.connect('changed', (monitor, file, otherFile, eventType) => {
+                if (eventType === Gio.FileMonitorEvent.CHANGES_DONE_HINT ||
+                    eventType === Gio.FileMonitorEvent.CHANGED) {
+                    this._debouncedRefresh(false);
+                }
+            });
 
             // 2. IDE database monitor (~/.config/Antigravity/.../state.vscdb)
             const dbPath = GLib.build_filenamev([home, '.config', 'Antigravity', 'User', 'globalStorage', 'state.vscdb']);
@@ -341,7 +357,24 @@ class AntigravityTokenIndicator extends PanelMenu.Button {
         });
     }
 
+    _updateProviderIcon(provider) {
+        if (provider === this._iconProvider) {
+            return;
+        }
+        this._iconProvider = provider;
+
+        const iconName = provider === 'claude' ? 'claude.svg' : 'antigravity.svg';
+        const iconPath = GLib.build_filenamev([this._extension.path, 'icons', iconName]);
+        const iconFile = Gio.File.new_for_path(iconPath);
+        if (iconFile.query_exists(null)) {
+            this._icon.gicon = new Gio.FileIcon({ file: iconFile });
+        }
+    }
+
     _renderPanel(data) {
+        const isClaude = data.provider === 'claude';
+        this._updateProviderIcon(data.provider);
+
         const format = this._settings.get_string('display-format');
         const primaryKeyword = this._settings.get_string('primary-model').toLowerCase();
         const warnLow = this._settings.get_boolean('warn-low-quota');
@@ -354,7 +387,10 @@ class AntigravityTokenIndicator extends PanelMenu.Button {
         this._label.visible = true;
 
         const models = data.models || [];
-        let primaryModel = models.find(m => m.name.toLowerCase().includes(primaryKeyword));
+        // Claude's limits all apply at once, so the tightest one is what matters.
+        let primaryModel = isClaude
+            ? models.reduce((low, m) => (!low || m.remaining_percentage < low.remaining_percentage ? m : low), null)
+            : models.find(m => m.name.toLowerCase().includes(primaryKeyword));
         if (!primaryModel && models.length > 0) {
             primaryModel = models[0];
         }
@@ -393,7 +429,9 @@ class AntigravityTokenIndicator extends PanelMenu.Button {
         } else if (format === 'dual') {
             const flash = models.find(m => m.name.includes('Flash') || m.name.includes('Gemini'));
             const claude = models.find(m => m.name.includes('Claude') || m.name.includes('Sonnet') || m.name.includes('GPT'));
-            if (flash && claude) {
+            if (isClaude && models.length >= 2) {
+                this._label.set_text(`${models[0].remaining_percentage.toFixed(0)}% | ${models[1].remaining_percentage.toFixed(0)}%`);
+            } else if (flash && claude) {
                 this._label.set_text(`⚡ ${flash.remaining_percentage.toFixed(0)}% | 🧠 ${claude.remaining_percentage.toFixed(0)}%`);
             } else if (primaryModel) {
                 this._label.set_text(`${primaryModel.remaining_percentage.toFixed(0)}%`);
@@ -402,6 +440,8 @@ class AntigravityTokenIndicator extends PanelMenu.Button {
     }
 
     _renderMenu(data) {
+        this._openIdeBtn.visible = data.provider !== 'claude';
+
         // User Header
         if (data.user) {
             this._userNameLabel.set_text(data.user.name || 'Antigravity User');
@@ -533,6 +573,11 @@ class AntigravityTokenIndicator extends PanelMenu.Button {
             this._historyMonitor.disconnect(this._historyMonitorId);
             this._historyMonitor.cancel();
             this._historyMonitor = null;
+        }
+        if (this._claudeHistoryMonitor && this._claudeHistoryMonitorId) {
+            this._claudeHistoryMonitor.disconnect(this._claudeHistoryMonitorId);
+            this._claudeHistoryMonitor.cancel();
+            this._claudeHistoryMonitor = null;
         }
         if (this._settings && this._settingsChangedId) {
             this._settings.disconnect(this._settingsChangedId);

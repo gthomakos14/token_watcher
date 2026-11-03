@@ -6,7 +6,9 @@
     "45",
     "46",
     "47",
-    "48"
+    "48",
+    "49",
+    "50"
   ],
   "extension-type": "shell-extension",
   "settings-schema": "org.gnome.shell.extensions.antigravity-token-watcher",

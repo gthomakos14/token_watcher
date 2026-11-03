@@ -1,6 +1,6 @@
 # Antigravity Token Watcher
 
-A GNOME Shell extension and high-performance Rust core for monitoring Google Antigravity AI token quotas and model limits in the top panel.
+A GNOME Shell extension and high-performance Rust core for monitoring Google Antigravity AI token quotas and Claude Code usage limits in the top panel. It shows whichever tool you prompted most recently.
 
 ![Antigravity Token Watcher](extension/icons/antigravity.svg)
 
@@ -8,6 +8,7 @@ A GNOME Shell extension and high-performance Rust core for monitoring Google Ant
 
 ## Features
 
+- **Automatic Claude / Antigravity Switching**: The logo, top bar percentage, and popup follow whichever tool received a prompt last.
 - **Blazingly Fast Rust Backend**: Built in Rust with smart local caching for sub-millisecond execution and minimal system overhead.
 - **Dual Support (CLI-First + IDE SQLite Fallback)**:
   - **CLI-First**: Directly interrogates the `agy` CLI (`/usage` and `/model` print-mode commands) for real-time, non-consuming live quota and active model synchronization.
@@ -37,6 +38,9 @@ token_watcher/
 ├── Cargo.toml          # Rust package dependencies (rusqlite, base64, serde, chrono)
 ├── src/                # Rust core engine
 │   ├── main.rs         # CLI interface (--json, --summary, human report)
+│   ├── recency.rs      # Picks the most recently prompted provider
+│   ├── claude_source.rs # Claude usage via `claude -p /usage`
+│   ├── cli_source.rs   # Antigravity usage via the agy CLI, report caching
 │   ├── db.rs           # SQLite reader for state.vscdb (read-only mode)
 │   ├── parser.rs       # Protobuf wire parser & quota extractor
 │   └── models.rs       # Data structures & JSON serialization
@@ -45,11 +49,23 @@ token_watcher/
 │   ├── extension.js    # PanelMenu.Button, async subprocess, and menu UI
 │   ├── prefs.js        # Adw.PreferencesWindow settings dialog
 │   ├── stylesheet.css  # GNOME Shell panel and menu styles
-│   ├── icons/          # Antigravity icon
+│   ├── icons/          # Antigravity and Claude icons
 │   └── schemas/        # GSettings schema & compiled definitions
 ├── Makefile            # Build, test, package, and installation automation
 └── README.md
 ```
+
+---
+
+## Claude Support
+
+On each run, `token-watcher` compares the newest prompt in `~/.claude/history.jsonl` with the newest prompt in `~/.gemini/antigravity-cli/history.jsonl` and the newest file in `~/.gemini/antigravity/conversations` (Antigravity IDE activity). The later one wins. Slash commands such as `/model` are not counted as prompts. If `claude` isn't installed, Antigravity is always shown.
+
+Claude usage comes from `claude -p /usage --output-format json --no-session-persistence`, which uses no tokens and writes no transcript. Its session and weekly limits appear as cards in the popup, and the top bar shows the lowest remaining percentage, since every limit applies at once. Reports are cached separately in `~/.cache/antigravity-token-watcher/claude-cache.json`.
+
+The `/usage` output is undocumented human-readable text. If its format changes, the last cached report is shown for up to 7 days and `token-watcher` then reports an error.
+
+Use `--provider claude` or `--provider antigravity` to override the automatic choice on the command line.
 
 ---
 
