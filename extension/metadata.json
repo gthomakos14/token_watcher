@@ -1,6 +1,6 @@
 {
-  "name": "Antigravity Token Watcher",
-  "description": "Displays Antigravity AI token quotas and model limits in the top bar.",
+  "name": "Token Watcher for Antigravity & Claude",
+  "description": "Shows Google Antigravity quotas and Claude Code usage limits in the top bar, following whichever tool you prompted most recently.",
   "uuid": "antigravity-token-watcher@gthomakos14.github.com",
   "shell-version": [
     "45",

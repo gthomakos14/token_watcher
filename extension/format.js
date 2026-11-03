@@ -13,6 +13,16 @@ export function isClaude(data) {
     return data.provider === 'claude';
 }
 
+/** Display name for the popup header, with a provider-specific fallback. */
+export function userName(data) {
+    return data.user?.name || (isClaude(data) ? 'Claude User' : 'Antigravity User');
+}
+
+/** Plan badge text, with a provider-specific fallback. */
+export function planName(data) {
+    return data.plan?.name || (isClaude(data) ? 'Claude' : 'Antigravity Quota');
+}
+
 export function providerIconName(provider) {
     return provider === 'claude' ? 'claude.svg' : 'antigravity.svg';
 }

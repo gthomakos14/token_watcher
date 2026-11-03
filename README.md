@@ -1,33 +1,40 @@
-# Antigravity Token Watcher
+# Token Watcher for Antigravity & Claude Code
 
-A GNOME Shell extension and high-performance Rust core for monitoring Google Antigravity AI token quotas and Claude Code usage limits in the top panel. It shows whichever tool you prompted most recently.
+A GNOME Shell extension and fast Rust command-line tool that show your Google Antigravity quotas and Claude Code usage limits in the top panel. It automatically shows whichever tool you prompted most recently, and switches its logo to match.
 
-![Antigravity Token Watcher](extension/icons/antigravity.svg)
+<p>
+  <img src="extension/icons/antigravity.svg" alt="Antigravity logo" height="64">
+  &nbsp;&nbsp;
+  <img src="extension/icons/claude.svg" alt="Claude logo" height="64">
+</p>
+
+The extension appears as **Token Watcher for Antigravity & Claude** in the GNOME Extensions app. Its UUID and settings keep their original `antigravity-token-watcher` names, so existing installs and settings carry over.
 
 ---
 
 ## Features
 
-- **Automatic Claude / Antigravity Switching**: The logo, top bar percentage, and popup follow whichever tool received a prompt last.
-- **Blazingly Fast Rust Backend**: Built in Rust with local caching, so a normal poll from the extension (a cache hit) takes about 1.2 ms and 5 MiB of memory. See [Performance](#performance).
-- **Dual Support (CLI-First + IDE SQLite Fallback)**:
-  - **CLI-First**: Directly interrogates the `agy` CLI (`/usage` and `/model` print-mode commands) for real-time, non-consuming live quota and active model synchronization.
-  - **SQLite Fallback**: Retains full zero-copy wire-format protobuf parsing of `state.vscdb` when using the Antigravity IDE.
-- **Real-time Quota Display**: Displays current quota percentage for primary models (e.g. `⚡ 76%` or `Flash: 76% | Claude: 13%`).
-- **Instant Reactive Updates**: Monitors `~/.gemini/antigravity-cli/history.jsonl` and `state.vscdb` via `Gio.FileMonitor` (`inotify`) to update the top bar as soon as a prompt or turn completes.
+- **Automatic Claude / Antigravity Switching**: The logo, top bar percentage, and popup follow whichever tool received a prompt last. See [Claude Support](#claude-support) for how the choice is made.
+- **Fast Rust Backend**: Built in Rust with local caching, so a normal poll from the extension (a cache hit) takes about 1.2 ms and 5 MiB of memory. See [Performance](#performance).
+- **Antigravity: CLI first, IDE fallback**:
+  - **CLI**: Runs the `agy` CLI's `/usage` and `/model` print-mode commands, which report live quotas and the active model without using any quota.
+  - **SQLite fallback**: Without `agy`, or when it fails and there's no cached report from the last 7 days, reads quotas from the Antigravity IDE's `state.vscdb` with a built-in protobuf parser.
+- **Claude Code**: Reads the session and weekly limits from `claude -p /usage`, which uses no tokens.
+- **Top Bar Display**: Shows the remaining percentage, e.g. `76%`, `Flash: 76%`, or for Antigravity's two model pools `⚡ 76% | 🧠 13%`.
+- **Instant Updates**: Watches `~/.claude/history.jsonl`, `~/.gemini/antigravity-cli/history.jsonl` and `state.vscdb` with `Gio.FileMonitor` (`inotify`), so the top bar updates as soon as you send a prompt.
 - **Detailed Popup Menu**:
-  - User account name, email, subscription plan tier (`Starter Quota`), and active model badge.
-  - Model quota pools (Gemini Flash & Pro pool, Claude & GPT pool).
-  - Visual color-coded progress bars (Green > 50%, Amber 20–50%, Red < 20%).
-  - Time remaining until weekly quota reset countdown.
-  - "Refresh" and "Open Antigravity IDE" quick action buttons.
+  - Account name, email, and plan (e.g. `Antigravity Starter Quota` or `Claude Pro`). For Antigravity, also the active model.
+  - One card per limit: Antigravity's Gemini pool and Claude & GPT pool, or Claude's session and weekly limits.
+  - Color-coded progress bars (green above 50%, amber above 20% up to 50%, red at 20% or below).
+  - Time until each limit resets.
+  - "Refresh" button, and "Open IDE" for Antigravity (hidden while Claude is shown).
 - **Configurable Preferences**:
-  - Display format: Percentage only, Model + Percentage, Dual Flash/Claude view, or Icon only.
-  - Prioritized model (Flash, Pro, Sonnet).
-  - Panel box placement (Right, Center, Left).
+  - Display format: percentage only, model + percentage, dual view (both Antigravity pools, or Claude's first two limits), or icon only.
+  - Primary Antigravity model (Flash, Pro, Sonnet). Claude always shows its tightest limit.
+  - Panel position (right, center, left).
   - Low quota warning threshold.
-  - Custom refresh interval.
-- **Standalone CLI**: Can also be used directly from terminal or scripts via `token-watcher`.
+  - Refresh interval.
+- **Standalone CLI**: Can also be used directly from the terminal or in scripts via `token-watcher`.
 
 ---
 
@@ -45,7 +52,7 @@ token_watcher/
 │   ├── parser.rs       # Protobuf wire parser & quota extractor
 │   ├── models.rs       # Data structures & JSON serialization
 │   └── test_util.rs    # Test-only helpers (fake CLI scripts)
-├── extension/          # GNOME Shell extension (GNOME 45 & 46 ESM)
+├── extension/          # GNOME Shell extension (GNOME Shell 45–50, ESM)
 │   ├── metadata.json   # Extension metadata (UUID: antigravity-token-watcher@gthomakos14.github.com)
 │   ├── extension.js    # PanelMenu.Button, async subprocess, and menu UI
 │   ├── format.js       # Pure display logic (panel text, colors), unit tested with Node
@@ -100,18 +107,18 @@ To reproduce, install hyperfine (`cargo install hyperfine`) and run `make bench`
 
 ---
 
-## How the Rust Backend Works
+## How the Antigravity SQLite Reader Works
 
-The SQLite path of the Rust core (`token-watcher`) makes no network requests and takes about 1.4 ms per run. It extracts quota details directly from the local Antigravity IDE storage. Fresh fetches through the `agy` and `claude` CLIs do go over the network (see [Performance](#performance)).
+This section describes the Antigravity IDE fallback, which reads quota details directly from local Antigravity IDE storage. It makes no network requests and takes about 1.4 ms per run. Fresh fetches through the `agy` and `claude` CLIs do go over the network (see [Performance](#performance)); Claude is covered in [Claude Support](#claude-support).
 
-### 1. Read-Only SQLite State Access ([`src/db.rs`](file:///home/glenn/personal_projects/token_watcher/src/db.rs))
+### 1. Read-Only SQLite State Access ([`src/db.rs`](src/db.rs))
 - **Path Resolution**: Automatically targets Antigravity's global state store at `~/.config/Antigravity/User/globalStorage/state.vscdb` (or a custom path via `--db`).
 - **Non-blocking Concurrency**: The database is opened using SQLite URI read-only mode (`file:<path>?mode=ro`) with `SQLITE_OPEN_READ_ONLY | SQLITE_OPEN_URI`. This prevents database locks or collisions while the Antigravity IDE is actively writing tokens and chat histories to the database.
 - **State Query**: Executes a targeted query against `ItemTable` for two synchronization keys:
   - `antigravityUnifiedStateSync.userStatus`: Houses serialized user account info, subscription tier, and real-time model quota structures.
   - `antigravityUnifiedStateSync.modelPreferences`: Houses agent model preferences and active model state.
 
-### 2. Schema-less Protobuf Wire Parser ([`src/parser.rs`](file:///home/glenn/personal_projects/token_watcher/src/parser.rs))
+### 2. Schema-less Protobuf Wire Parser ([`src/parser.rs`](src/parser.rs))
 Instead of relying on compiled `.proto` definitions or `protoc` build-time dependencies (which break whenever upstream schemas evolve), the backend implements a zero-copy, wire-format Protocol Buffers decoder:
 - **Wire Type Support**: Decodes LEB128 varints (Type 0), 64-bit fixed words (Type 1), length-delimited byte slices (Type 2), and 32-bit IEEE 754 floats (Type 5).
 - **Nested Base64 Unwrapping**: Antigravity wraps the state protobuf inside an outer Base64 payload, which indexes into a secondary length-delimited protobuf containing an inner Base64-encoded protobuf payload (`Base64 -> Protobuf Field 1.2 -> Base64 -> Inner Protobuf`).
@@ -125,16 +132,25 @@ Instead of relying on compiled `.proto` definitions or `protoc` build-time depen
 
 ### 3. Active Model Detection
 - Decodes `antigravityUnifiedStateSync.modelPreferences` looking for the sentinel key `last_selected_agent_model_sentinel_key`.
-- Extracts and maps the active model ID to mark `is_selected: true` on the matching quota record (indicated with an asterisk `*` in CLI reports and prioritized in the UI).
+- Extracts and maps the active model ID to mark `is_selected: true` on the matching quota record (shown with an asterisk `*` in terminal reports and a highlighted card in the popup).
 
-### 4. Output Modes & Serialization ([`src/main.rs`](file:///home/glenn/personal_projects/token_watcher/src/main.rs), [`src/models.rs`](file:///home/glenn/personal_projects/token_watcher/src/models.rs))
-- **`--json`**: Serializes `TokenReport` into a clean JSON object for seamless consumption by the GNOME Shell extension asynchronously via `Gio.Subprocess`.
-- **`--summary`**: Emits a compact, single-line string (e.g. `Flash: 86% | Claude: 80%`) for status bars like tmux, Polybar, Waybar, or i3blocks.
-- **Default (Terminal)**: Renders a full, formatted CLI dashboard complete with Unicode progress bars (`█` / `░`) and reset countdowns.
+## Output Modes ([`src/main.rs`](src/main.rs), [`src/models.rs`](src/models.rs))
+
+These apply to both Claude and Antigravity reports.
+- **`--json`**: Serializes `TokenReport` as JSON, including a `provider` field (`"claude"` or `"antigravity"`). The GNOME Shell extension reads this through `Gio.Subprocess`.
+- **`--summary`**: Prints one line for status bars like tmux, Polybar, Waybar, or i3blocks, e.g. `Claude Session: 78% | Week (all models): 93%`, or for Antigravity `Gemini: 72% | Claude: 100%` (the second figure is Antigravity's Claude & GPT pool, not Claude Code).
+- **Default (Terminal)**: Prints a formatted report with Unicode progress bars (`█` / `░`) and reset countdowns.
 
 ---
 
 ## Installation & Setup
+
+### Requirements
+- A Rust toolchain (`cargo`) and `glib-compile-schemas` to build.
+- GNOME Shell 45–50.
+- At least one of:
+  - **Antigravity**: the `agy` CLI, or the Antigravity IDE (for the SQLite fallback).
+  - **Claude Code**: the `claude` CLI, logged in with a subscription (usage limits only exist for subscription plans). It must be in `~/.local/bin`, on your `PATH`, or in `/usr/local/bin` or `/usr/bin`.
 
 ### 1. Build the Rust binary and schemas
 ```bash
@@ -148,14 +164,16 @@ make install
 ```
 This installs the extension bundle into `~/.local/share/gnome-shell/extensions/antigravity-token-watcher@gthomakos14.github.com`.
 
-### 3. Activating in GNOME Shell
-Because your desktop runs **GNOME Shell 46 on Wayland**, GNOME Shell loads newly added extension files into its runtime upon session login:
-1. **Log out of your desktop session and log back in** (or reboot).
+### 3. Activate it in GNOME Shell
+GNOME Shell only picks up newly installed extension files when it restarts:
+1. On **Wayland**, log out and back in. On **X11**, press Alt+F2, type `r`, and press Enter.
 2. Enable the extension:
    ```bash
    make enable
    ```
-   Or toggle it via the **Extensions** application (`gnome-extensions-app`).
+   Or toggle it in the **Extensions** app (`gnome-extensions-app`).
+
+After updating, run `make install` again and repeat step 1.
 
 ---
 
@@ -172,25 +190,43 @@ You can also use the compiled Rust binary directly from your terminal or in cust
 
 # JSON output
 ./target/release/token-watcher --json
+
+# Pick a tool instead of the most recently prompted one
+./target/release/token-watcher --provider claude
+./target/release/token-watcher --provider antigravity
 ```
 
-Example terminal output:
+Other options: `--refresh` skips the cache, `--ttl <SECONDS>` sets how long a cached report is used (default 60), and `--db <PATH>` reads a specific `state.vscdb` directly. Run with `--help` for the full list.
+
+Example output for Claude Code:
 ```
 ==========================================================
-             ANTIGRAVITY TOKEN & QUOTA WATCHER            
+                   CLAUDE USAGE WATCHER                   
 ==========================================================
-User:  Hambone Fakenamington <Secretariatrulez96@hotmail.com>
-Plan:  Antigravity Starter Quota
+User:         ada <ada@example.com>
+Plan:         Claude Pro
 ----------------------------------------------------------
-MODEL                            REMAIN       RESETS IN  STATUS    
+MODEL / GROUP                          REMAIN       RESETS IN  STATUS    
 ----------------------------------------------------------
- Gemini 3.6 Flash (High)        85.8% [█████████░]      1d 1h  Fast    
- Gemini 3.6 Flash (Medium)      85.8% [█████████░]      1d 1h  Fast    
- Gemini 3.6 Flash (Low)         85.8% [█████████░]      1d 1h  Fast    
- Gemini 3.1 Pro (High)          85.8% [█████████░]      1d 1h          
- Gemini 3.1 Pro (Low)           85.8% [█████████░]      1d 1h          
- Claude Sonnet 4.6 (Thinking)   79.5% [████████░░]      1d 1h          
- Claude Opus 4.6 (Thinking)     79.5% [████████░░]      1d 1h          
- GPT-OSS 120B (Medium)          79.5% [████████░░]      1d 1h          
+ Session                              78.0% [████████░░]     2h 49m          
+ Week (all models)                    93.0% [█████████░]     1d 13h          
 ==========================================================
 ```
+
+Example output for Antigravity (via the `agy` CLI):
+```
+==========================================================
+            ANTIGRAVITY TOKEN & QUOTA WATCHER             
+==========================================================
+User:         Ada Lovelace <ada@example.com>
+Plan:         Antigravity Starter Quota
+Active Model: Gemini 3.8 Flash (Medium)
+----------------------------------------------------------
+MODEL / GROUP                          REMAIN       RESETS IN  STATUS    
+----------------------------------------------------------
+*Gemini (Flash & Pro)                 71.5% [███████░░░]        17m  Fast    
+ Claude & GPT (Sonnet, Opus, GPT-OSS) 100.0% [██████████]      7d 0h  Thinking
+==========================================================
+```
+
+When Antigravity data comes from the IDE's SQLite database instead, each model is listed separately (e.g. `Gemini 3.6 Flash (High)`, `Claude Sonnet 4.6 (Thinking)`) rather than grouped into the two pools.

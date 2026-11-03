@@ -15,7 +15,7 @@ import * as Format from './format.js';
 const AntigravityTokenIndicator = GObject.registerClass(
 class AntigravityTokenIndicator extends PanelMenu.Button {
     _init(extension) {
-        super._init(0.0, 'Antigravity Token Watcher');
+        super._init(0.0, 'Token Watcher');
         this._extension = extension;
         this._settings = extension.getSettings();
         this._timeoutId = null;
@@ -129,7 +129,7 @@ class AntigravityTokenIndicator extends PanelMenu.Button {
             x_expand: true,
         });
         this._userNameLabel = new St.Label({
-            text: 'Antigravity User',
+            text: _('Loading…'),
             style_class: 'antigravity-user-name',
         });
         this._userEmailLabel = new St.Label({
@@ -137,7 +137,7 @@ class AntigravityTokenIndicator extends PanelMenu.Button {
             style_class: 'antigravity-user-email',
         });
         this._planBadgeLabel = new St.Label({
-            text: 'Starter Quota',
+            text: '',
             style_class: 'antigravity-plan-badge',
         });
         this._activeModelLabel = new St.Label({
@@ -406,12 +406,12 @@ class AntigravityTokenIndicator extends PanelMenu.Button {
 
         // User Header
         if (data.user) {
-            this._userNameLabel.set_text(data.user.name || 'Antigravity User');
+            this._userNameLabel.set_text(Format.userName(data));
             this._userEmailLabel.set_text(data.user.email || '');
             this._userEmailLabel.visible = !!data.user.email;
         }
         if (data.plan) {
-            this._planBadgeLabel.set_text(data.plan.name || 'Antigravity Quota');
+            this._planBadgeLabel.set_text(Format.planName(data));
             this._planBadgeLabel.visible = true;
         } else {
             this._planBadgeLabel.visible = false;

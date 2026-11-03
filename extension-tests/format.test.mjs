@@ -28,6 +28,17 @@ test('provider helpers', () => {
     assert.equal(F.providerIconName(undefined), 'antigravity.svg');
 });
 
+test('user and plan names fall back per provider', () => {
+    assert.equal(F.userName({ provider: 'claude', user: { name: 'ada' } }), 'ada');
+    assert.equal(F.userName({ provider: 'claude', user: { name: '' } }), 'Claude User');
+    assert.equal(F.userName({ provider: 'antigravity', user: {} }), 'Antigravity User');
+    assert.equal(F.userName({}), 'Antigravity User', 'reports from before Claude support are Antigravity');
+
+    assert.equal(F.planName({ provider: 'claude', plan: { name: 'Claude Pro' } }), 'Claude Pro');
+    assert.equal(F.planName({ provider: 'claude', plan: { name: '' } }), 'Claude');
+    assert.equal(F.planName({ provider: 'antigravity', plan: {} }), 'Antigravity Quota');
+});
+
 test('Claude primary model is the tightest limit, ignoring the keyword', () => {
     assert.equal(F.pickPrimaryModel(claude(CLAUDE_MODELS), 'session').name, 'Week (all models)');
 });

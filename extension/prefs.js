@@ -16,7 +16,7 @@ export default class AntigravityTokenWatcherPreferences extends ExtensionPrefere
         // Display Group
         const displayGroup = new Adw.PreferencesGroup({
             title: _('Top Bar Display'),
-            description: _('Configure how Antigravity quota is displayed in the panel'),
+            description: _('Configure how Antigravity and Claude usage is displayed in the panel'),
         });
 
         // Display Format
