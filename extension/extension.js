@@ -28,6 +28,11 @@ class AntigravityTokenIndicator extends PanelMenu.Button {
         this._claudeHistoryMonitorId = null;
         this._iconProvider = null;
         this._latestData = null;
+        // Provider chosen with the switch button; null follows the most recently prompted one.
+        // Cleared by new prompt activity so the display goes back to following it.
+        this._providerOverride = null;
+        // Incremented per fetch so results from before a provider switch are dropped.
+        this._fetchSeq = 0;
         // Tracks { track, signalId } pairs so we can disconnect before destroy_all_children()
         this._trackSignals = [];
 
@@ -205,6 +210,23 @@ class AntigravityTokenIndicator extends PanelMenu.Button {
         });
         actionsBox.add_child(refreshBtn);
 
+        // Switch between Antigravity and Claude
+        const switchBtn = this._switchBtn = new St.Button({
+            label: _('Claude'),
+            style_class: 'button antigravity-action-btn',
+            x_expand: true,
+            reactive: true,
+            can_focus: true,
+            track_hover: true,
+        });
+        switchBtn.connect('clicked', () => {
+            const current = this._providerOverride ?? this._latestData?.provider;
+            this._providerOverride = Format.otherProvider(current);
+            switchBtn.label = _(Format.switchLabel(this._providerOverride));
+            this._fetchStatus(false);
+        });
+        actionsBox.add_child(switchBtn);
+
         // Open Antigravity IDE button
         const openIdeBtn = this._openIdeBtn = new St.Button({
             label: _('Open IDE'),
@@ -257,6 +279,7 @@ class AntigravityTokenIndicator extends PanelMenu.Button {
                 this._historyMonitorId = this._historyMonitor.connect('changed', (monitor, file, otherFile, eventType) => {
                     if (eventType === Gio.FileMonitorEvent.CHANGES_DONE_HINT ||
                         eventType === Gio.FileMonitorEvent.CHANGED) {
+                        this._providerOverride = null;
                         this._debouncedRefresh(true);
                     }
                 });
@@ -271,6 +294,7 @@ class AntigravityTokenIndicator extends PanelMenu.Button {
             this._claudeHistoryMonitorId = this._claudeHistoryMonitor.connect('changed', (monitor, file, otherFile, eventType) => {
                 if (eventType === Gio.FileMonitorEvent.CHANGES_DONE_HINT ||
                     eventType === Gio.FileMonitorEvent.CHANGED) {
+                    this._providerOverride = null;
                     this._debouncedRefresh(false);
                 }
             });
@@ -320,10 +344,14 @@ class AntigravityTokenIndicator extends PanelMenu.Button {
     _fetchStatus(forceRefresh = false) {
         return new Promise(resolve => {
             const bin = this._getBinaryPath();
+            const seq = ++this._fetchSeq;
             try {
                 const argv = [bin, '--json'];
                 if (forceRefresh) {
                     argv.push('--refresh');
+                }
+                if (this._providerOverride) {
+                    argv.push('--provider', this._providerOverride);
                 }
                 const proc = new Gio.Subprocess({
                     argv,
@@ -335,6 +363,11 @@ class AntigravityTokenIndicator extends PanelMenu.Button {
                     try {
                         const [, stdout, stderr] = proc.communicate_utf8_finish(res);
                         const data = Format.reportFromOutput(proc.get_successful(), stdout);
+                        if (data && seq !== this._fetchSeq) {
+                            // A newer fetch (e.g. after a provider switch) supersedes this one.
+                            resolve(data);
+                            return;
+                        }
                         if (data) {
                             this._latestData = data;
                             this._renderPanel(data);
@@ -403,6 +436,7 @@ class AntigravityTokenIndicator extends PanelMenu.Button {
 
     _renderMenu(data) {
         this._openIdeBtn.visible = !Format.isClaude(data);
+        this._switchBtn.label = _(Format.switchLabel(data.provider));
 
         // User Header
         if (data.user) {

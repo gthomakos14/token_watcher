@@ -23,6 +23,16 @@ export function planName(data) {
     return data.plan?.name || (isClaude(data) ? 'Claude' : 'Antigravity Quota');
 }
 
+/** The provider the switch button jumps to; reports from before Claude support are Antigravity. */
+export function otherProvider(provider) {
+    return provider === 'claude' ? 'antigravity' : 'claude';
+}
+
+/** Label for the switch button while `provider` is shown. */
+export function switchLabel(provider) {
+    return otherProvider(provider) === 'claude' ? 'Claude' : 'Antigravity';
+}
+
 export function providerIconName(provider) {
     return provider === 'claude' ? 'claude.svg' : 'antigravity.svg';
 }
