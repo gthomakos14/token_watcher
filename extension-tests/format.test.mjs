@@ -28,6 +28,14 @@ test('provider helpers', () => {
     assert.equal(F.providerIconName(undefined), 'antigravity.svg');
 });
 
+test('switching providers', () => {
+    assert.equal(F.otherProvider('claude'), 'antigravity');
+    assert.equal(F.otherProvider('antigravity'), 'claude');
+    assert.equal(F.otherProvider(undefined), 'claude', 'reports from before Claude support are Antigravity');
+    assert.equal(F.switchLabel('claude'), 'Antigravity');
+    assert.equal(F.switchLabel('antigravity'), 'Claude');
+});
+
 test('user and plan names fall back per provider', () => {
     assert.equal(F.userName({ provider: 'claude', user: { name: 'ada' } }), 'ada');
     assert.equal(F.userName({ provider: 'claude', user: { name: '' } }), 'Claude User');
